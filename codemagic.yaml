@@ -1,16 +1,18 @@
 workflows:
   rimusic-android:
     name: RiMusic Android APK
-    instance_type: mac_studio_m2
+    instance_type: mac_studio_m2     # Mac M2 (the free-tier option)
     max_build_duration: 60
     environment:
-      java: 21
-      android_sdk: 35
+      java: 21                       # RiMusic 0.6.76+ requires JDK 21 (JVM_21)
+      android_sdk: 35                # compileSdk = 35
+      groups:
+        # - android_keystore         # uncomment if you set up Android code signing in Codemagic
     cache:
       cache_paths:
         - $HOME/.gradle/caches
         - $HOME/.gradle/wrapper
-        - $HOME/.konan
+        - $HOME/.konan              # Kotlin/Native compiler cache
         - $HOME/.m2
     scripts:
       - name: Accept Android licenses
@@ -21,13 +23,19 @@ workflows:
         script: chmod +x gradlew
       - name: Clean
         script: ./gradlew clean
-      - name: Build debug APK
+      - name: Build debug APK (installable without signing setup)
         script: ./gradlew :composeApp:assembleDebug
+      - name: (Optional) Build release APK (needs signing config, uncomment to enable)
+        script: |
+          # ./gradlew :composeApp:assembleRelease
+        ignore_failure: true
     artifacts:
       - composeApp/build/outputs/apk/**/*.apk
+      - composeApp/build/outputs/bundle/**/*.aab
     publishing:
       email:
-        recipients: []
+        recipients:
+          # - you@example.com        # put your email here to get the APK mailed to you
         notify:
           success: true
           failure: true
