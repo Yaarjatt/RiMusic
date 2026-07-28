@@ -6,7 +6,7 @@ workflows:
     environment:
       java: 21                       # RiMusic 0.6.76+ requires JDK 21 (JVM_21)
                     # compileSdk = 35
-      groups:
+      
         # - android_keystore         # uncomment if you set up Android code signing in Codemagic
     cache:
       cache_paths:
