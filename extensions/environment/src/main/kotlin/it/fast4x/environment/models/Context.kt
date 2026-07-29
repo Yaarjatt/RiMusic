@@ -181,5 +181,55 @@ data class Context(
             )
         )
 
+        /**
+         * Hardcoded IOS client fallback.
+         * As of mid-2026 YouTube's /youtubei/v1/player returns direct playable audio URLs
+         * (no poToken/signatureCipher) when called with the IOS client and a matching iOS UA / version.
+         * This does not require login or a poToken and is used as a stream fallback when the
+         * primary WEB_REMIX / potoken path fails (which often happens in self-built debug builds
+         * or on devices with an outdated WebView).
+         */
+        val IOS = Context(
+            Client(
+                clientName = "IOS",
+                clientVersion = "20.03.02",
+                platform = "MOBILE",
+                userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+                deviceMake = "Apple",
+                deviceModel = "iPhone16,2",
+                osName = "iOS",
+                osVersion = "18.3.2.22D82",
+                acceptHeader = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                xClientName = 5,
+                loginSupported = false,
+                loginRequired = false,
+                useSignatureTimestamp = false,
+                useWebPoTokens = false,
+                referer = "https://www.youtube.com/",
+            )
+        )
+
+        /**
+         * Hardcoded ANDROID_VR client fallback.
+         * Same reasoning as IOS: returns direct audio URLs without poToken / login.
+         * yt-dlp uses this client (clientName=ANDROID_VR, v1.60.19, x-client-name=28) very
+         * successfully as its primary non-web client.
+         */
+        val ANDROID_VR = Context(
+            Client(
+                clientName = "ANDROID_VR",
+                clientVersion = "1.60.19",
+                platform = "MOBILE",
+                androidSdkVersion = 34,
+                userAgent = "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; SM-G998B Build/UP1A.231005.007) gzip",
+                xClientName = 28,
+                loginSupported = false,
+                loginRequired = false,
+                useSignatureTimestamp = false,
+                useWebPoTokens = false,
+                referer = "https://www.youtube.com/",
+            )
+        )
+
     }
 }
