@@ -205,7 +205,7 @@ data class Context(
                 loginRequired = false,
                 useSignatureTimestamp = false,
                 useWebPoTokens = false,
-                referer = "https://www.youtube.com/",
+                referer = "https://music.youtube.com/",
             )
         )
 
@@ -227,7 +227,7 @@ data class Context(
                 loginRequired = false,
                 useSignatureTimestamp = false,
                 useWebPoTokens = false,
-                referer = "https://www.youtube.com/",
+                referer = "https://music.youtube.com/",
             )
         )
 
