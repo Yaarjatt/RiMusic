@@ -92,3 +92,7 @@
 -keep class org.mozilla.classfile.ClassFileWriter
 -dontwarn org.mozilla.javascript.JavaToJSONConverters
 -dontwarn org.mozilla.javascript.tools.**
+# Rhino (used by NewPipeExtractor) references JDK-only scripting/dynalink APIs that do not exist on Android.
+# These code paths are never exercised on Android, so tell R8 to ignore the missing references.
+-dontwarn javax.script.**
+-dontwarn jdk.dynalink.**
