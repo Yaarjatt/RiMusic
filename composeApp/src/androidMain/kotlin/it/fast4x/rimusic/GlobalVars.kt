@@ -61,7 +61,7 @@ fun getAudioQualityFormat() = appContext().preferences.getEnum(audioQualityForma
 fun getViewType() = appContext().preferences.getEnum(viewTypeKey, ViewType.Grid)
 fun getDnsOverHttpsType() = appContext().preferences.getEnum(dnsOverHttpsTypeKey, DnsOverHttpsType.None)
 fun getUiType() = appContext().preferences.getEnum(UiTypeKey, UiType.RiMusic)
-fun getStreamingPlayerType() = appContext().preferences.getEnum(streamingPlayerTypeKey, StreamingPlayerType.Advanced)
+fun getStreamingPlayerType() = appContext().preferences.getEnum(streamingPlayerTypeKey, StreamingPlayerType.Default)
 
 fun ytAccountName() = appContext().preferences.getString(ytAccountNameKey, "")
 fun ytAccountThumbnail() = appContext().preferences.getString(ytAccountThumbnailKey, "")
