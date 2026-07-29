@@ -1,21 +1,21 @@
 workflows:
   rimusic-android:
-    name: RiMusic Android APK
-    # Mac M2 (the free-tier option)
+    name: RiMusic Android RELEASE APK (with IOS/ANDROID_VR fallback patch)
+    instance_type: mac_mini_m2      # Apple Silicon (M2) free-tier builder
     max_build_duration: 60
     environment:
-      java: 21                       # RiMusic 0.6.76+ requires JDK 21 (JVM_21)
-                    # compileSdk = 35
-      
-        # - android_keystore         # uncomment if you set up Android code signing in Codemagic
+      java: 21                      # RiMusic 0.6.76 uses JVM_21 bytecode target
     cache:
       cache_paths:
         - $HOME/.gradle/caches
         - $HOME/.gradle/wrapper
-        - $HOME/.konan              # Kotlin/Native compiler cache
-        - $HOME/.m2
+        - $HOME/.konan
     scripts:
-      - name: Accept Android licenses
+      - name: Show Java version
+        script: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+      - name: Install required Android SDK components
         script: |
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" > /dev/null 2>&1 || true
@@ -23,13 +23,11 @@ workflows:
         script: chmod +x gradlew
       - name: Clean
         script: ./gradlew clean
-      - name: Build debug APK (installable without signing setup)
-        script: ./gradlew :composeApp:assembleDebug
-      - name: (Optional) Build release APK (needs signing config, uncomment to enable)
-        script: |
-          # ./gradlew :composeApp:assembleRelease
-        ignore_failure: true
+      - name: Build full RELEASE APK
+        # Note: RiMusic signs its release build with the debug keystore
+        # (see composeApp/build.gradle.kts), so the resulting APK installs
+        # directly without any signing setup.
+        script: ./gradlew :composeApp:assembleFullRelease
     artifacts:
-      - composeApp/build/outputs/apk/**/*.apk
-      - composeApp/build/outputs/bundle/**/*.aab
-   
+      - composeApp/build/outputs/apk/full/release/*.apk
+      - composeApp/build/outputs/bundle/full/release/*.aab
