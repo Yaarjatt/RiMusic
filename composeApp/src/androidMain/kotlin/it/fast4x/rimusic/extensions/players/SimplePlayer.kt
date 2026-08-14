@@ -401,20 +401,27 @@ object SimplePlayer {
      * If this returns true the url is likely to work.
      * If this returns false the url might cause an error during playback.
      */
+        /**
+     * Checks if the stream url returns a successful status.
+     * Uses a bounded Range request because googlevideo CDN now rejects
+     * HEAD-only and open-ended Range: bytes=0- requests (as of mid-2026),
+     * returning HTTP 403 even though bounded Range GETs (which ExoPlayer uses
+     * for actual streaming) work fine.
+     */
     private fun validateStatus(url: String): Boolean {
         try {
             val requestBuilder = okhttp3.Request.Builder()
-                .head()
+                .get()
                 .url(url)
+                .header("Range", "bytes=0-1023")
             val response = httpClient.newCall(requestBuilder.build()).execute()
-            return response.isSuccessful
+            return response.isSuccessful || response.code == 206
         } catch (e: Exception) {
             Timber.e("SimplePlayer validateStatus Could not validate stream url: $url")
             println("SimplePlayer validateStatus Could not validate stream url: $url")
         }
         return false
     }
-
     /**
      * Wrapper around the [NewPipeUtils.getSignatureTimestamp] function which reports exceptions
      */
