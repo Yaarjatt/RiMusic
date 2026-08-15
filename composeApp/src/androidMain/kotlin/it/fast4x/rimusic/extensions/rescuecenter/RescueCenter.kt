@@ -63,11 +63,9 @@ fun RescueScreen(
 
     val context = LocalContext.current
     val noLogAvailable = stringResource(R.string.no_log_available)
-    var fileName by remember {
-        mutableStateOf("")
-    }
+    var fileName by remember { mutableStateOf("") }
 
-    fun makeLauncher(logFileName: String) =
+    fun exportLogLauncher(logFileName: String) =
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
             val file = File(context.filesDir.resolve("logs"), logFileName)
@@ -83,8 +81,8 @@ fun RescueScreen(
                 }
         }
 
-    val exportCrashLauncher = makeLauncher("RiMusic_crash_log.txt")
-    val exportDebugLogLauncher = makeLauncher("RiMusic_log.txt")
+    val exportCrashLauncher = exportLogLauncher("RiMusic_crash_log.txt")
+    val exportDebugLogLauncher = exportLogLauncher("RiMusic_log.txt")
 
     fun launchExport(launcher: androidx.activity.result.ActivityResultLauncher<String>, prefix: String) {
         try {
@@ -102,9 +100,7 @@ fun RescueScreen(
 
     if (isExportingCrashLog) {
         InputTextDialog(
-            onDismiss = {
-                isExportingCrashLog = false
-            },
+            onDismiss = { isExportingCrashLog = false },
             title = "Enter the name of crash log export",
             value = "",
             placeholder = "Enter the name of log export",
@@ -117,9 +113,7 @@ fun RescueScreen(
 
     if (isExportingDebugLog) {
         InputTextDialog(
-            onDismiss = {
-                isExportingDebugLog = false
-            },
+            onDismiss = { isExportingDebugLog = false },
             title = "Enter the name of debug log export",
             value = "",
             placeholder = "Enter the name of log export",
@@ -139,7 +133,6 @@ fun RescueScreen(
             .padding(top = 10.dp)
     ) {
 
-
         Column(
             verticalArrangement = Arrangement.SpaceAround
         ) {
@@ -153,9 +146,7 @@ fun RescueScreen(
                     painter = painterResource(R.drawable.app_icon),
                     contentDescription = null,
                     colorFilter = ColorFilter.tint(colorPalette().accent),
-                    modifier = Modifier
-                        .padding(all = 5.dp)
-                        .size(30.dp)
+                    modifier = Modifier.padding(all = 5.dp).size(30.dp)
                 )
                 BasicText(
                     text = stringResource(R.string.rescue_center),
@@ -166,56 +157,38 @@ fun RescueScreen(
             Title(
                 title = stringResource(R.string.export_the_database),
                 icon = R.drawable.rescue,
-                modifier = Modifier.fillMaxWidth()
-                    .background(colorPalette().background1),
-                onClick = {
-                    isExporting = true
-                }
+                modifier = Modifier.fillMaxWidth().background(colorPalette().background1),
+                onClick = { isExporting = true }
             )
-            Spacer( modifier = Modifier.height(20.dp) )
+            Spacer(modifier = Modifier.height(20.dp))
             Title(
                 title = stringResource(R.string.import_the_database),
                 icon = R.drawable.rescue,
-                modifier = Modifier.fillMaxWidth()
-                    .background(colorPalette().background1),
-                onClick = {
-                    isImporting = true
-                }
+                modifier = Modifier.fillMaxWidth().background(colorPalette().background1),
+                onClick = { isImporting = true }
             )
-            Spacer( modifier = Modifier.height(20.dp) )
+            Spacer(modifier = Modifier.height(20.dp))
             Title(
                 title = stringResource(R.string.export_crash_log),
                 icon = R.drawable.rescue,
-                modifier = Modifier.fillMaxWidth()
-                    .background(colorPalette().background1),
-                onClick = {
-                    isExportingCrashLog = true
-                }
+                modifier = Modifier.fillMaxWidth().background(colorPalette().background1),
+                onClick = { isExportingCrashLog = true }
             )
-            Spacer( modifier = Modifier.height(20.dp) )
+            Spacer(modifier = Modifier.height(20.dp))
             Title(
                 title = "Export debug log",
                 icon = R.drawable.rescue,
-                modifier = Modifier.fillMaxWidth()
-                    .background(colorPalette().background1),
-                onClick = {
-                    isExportingDebugLog = true
-                }
+                modifier = Modifier.fillMaxWidth().background(colorPalette().background1),
+                onClick = { isExportingDebugLog = true }
             )
-            Spacer( modifier = Modifier.height(50.dp) )
+            Spacer(modifier = Modifier.height(50.dp))
             Title(
                 title = stringResource(R.string.click_to_close),
                 icon = R.drawable.close,
-                modifier = Modifier.fillMaxWidth()
-                    .background(colorPalette().background1),
-                onClick = {
-                    exit()
-                }
+                modifier = Modifier.fillMaxWidth().background(colorPalette().background1),
+                onClick = { exit() }
             )
-
         }
-
-
 
         if (isExporting)
             ExportRescueBackup(
@@ -228,7 +201,6 @@ fun RescueScreen(
                 onDismiss = { isImporting = false },
                 onRestore = onRestore
             )
-
     }
 }
 
@@ -241,9 +213,8 @@ fun ExportRescueBackup(
     ConfirmationDialog(
         text = stringResource(R.string.export_the_database),
         onDismiss = onDismiss,
-        onConfirm =  onbackup
+        onConfirm = onbackup
     )
-
 }
 
 @Composable
@@ -252,23 +223,18 @@ fun ImportRescueBackup(
     onRestore: () -> Unit = {}
 ) {
     var showDialog by remember { mutableStateOf(true) }
-        ConfirmationDialog(
-            text = stringResource(R.string.import_the_database),
-            onDismiss = {
-                showDialog = false
-                onDismiss()
-            },
-            onConfirm =  onRestore
-        )
-
+    ConfirmationDialog(
+        text = stringResource(R.string.import_the_database),
+        onDismiss = {
+            showDialog = false
+            onDismiss()
+        },
+        onConfirm = onRestore
+    )
 }
 
-fun exit(){
-    CoroutineScope(Dispatchers.IO).launch{
-        delay(2000)
-    }
-
-    // Terminate the app or perform any other necessary action
+fun exit() {
+    CoroutineScope(Dispatchers.IO).launch { delay(2000) }
     android.os.Process.killProcess(android.os.Process.myPid())
     exitProcess(0)
 }
