@@ -65,24 +65,33 @@ fun RescueScreen(
     val noLogAvailable = stringResource(R.string.no_log_available)
     var fileName by remember { mutableStateOf("") }
 
-    fun exportLogLauncher(logFileName: String) =
-        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-            if (uri == null) return@rememberLauncherForActivityResult
-            val file = File(context.filesDir.resolve("logs"), logFileName)
-            if (!file.exists()) {
-                SmartMessage(noLogAvailable, type = PopupType.Info, context = context)
-                return@rememberLauncherForActivityResult
-            }
-            context.applicationContext.contentResolver.openOutputStream(uri)
-                ?.use { outputStream ->
-                    FileInputStream(file).use { inputStream ->
-                        inputStream.copyTo(outputStream)
-                    }
-                }
+    val exportCrashLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val file = File(context.filesDir.resolve("logs"), "RiMusic_crash_log.txt")
+        if (!file.exists()) {
+            SmartMessage(noLogAvailable, type = PopupType.Info, context = context)
+            return@rememberLauncherForActivityResult
         }
+        context.applicationContext.contentResolver.openOutputStream(uri)?.use { outputStream ->
+            FileInputStream(file).use { inputStream -> inputStream.copyTo(outputStream) }
+        }
+    }
 
-    val exportCrashLauncher = exportLogLauncher("RiMusic_crash_log.txt")
-    val exportDebugLogLauncher = exportLogLauncher("RiMusic_log.txt")
+    val exportDebugLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val file = File(context.filesDir.resolve("logs"), "RiMusic_log.txt")
+        if (!file.exists()) {
+            SmartMessage(noLogAvailable, type = PopupType.Info, context = context)
+            return@rememberLauncherForActivityResult
+        }
+        context.applicationContext.contentResolver.openOutputStream(uri)?.use { outputStream ->
+            FileInputStream(file).use { inputStream -> inputStream.copyTo(outputStream) }
+        }
+    }
 
     fun launchExport(launcher: androidx.activity.result.ActivityResultLauncher<String>, prefix: String) {
         try {
