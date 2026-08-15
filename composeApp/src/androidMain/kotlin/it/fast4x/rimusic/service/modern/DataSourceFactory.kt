@@ -60,11 +60,6 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
             }
         }
 
-        val isCached = try {
-            cache.isCached(mediaId, dataSpec.position, PlayerServiceModern.ChunkLength)
-        } catch (e: Exception) {
-            false
-        }
         val isDownloaded = try {
             downloadCache.isCached(mediaId, dataSpec.position, length)
         } catch (e: Exception) {
@@ -72,8 +67,19 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
         }
 
 
-        if( dataSpec.isLocal || isCached || isDownloaded ) {
+        if( dataSpec.isLocal || isDownloaded ) {
              //scope.launch(Dispatchers.IO) { recoverSong(mediaId) }
+            return@Factory dataSpec
+        }
+
+        // Check the playback cache (principalCache)
+        val isCached = try {
+            cache.isCached(mediaId, dataSpec.position, length)
+        } catch (e: Exception) {
+            false
+        }
+
+        if (isCached) {
             return@Factory dataSpec
         }
 

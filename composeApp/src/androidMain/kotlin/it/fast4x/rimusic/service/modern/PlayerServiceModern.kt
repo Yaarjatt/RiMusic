@@ -1241,18 +1241,13 @@ class PlayerServiceModern : MediaLibraryService(),
     fun createCacheDataSource(): CacheDataSource.Factory =
         CacheDataSource
             .Factory()
-            .setCache(downloadCache)
+            .setCache(cache)
             .setUpstreamDataSourceFactory(
-                CacheDataSource
-                    .Factory()
-                    .setCache(cache)
-                    .setUpstreamDataSourceFactory(
-                        DefaultDataSource.Factory(
-                            this,
-                            OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
-                        )
-                    ),
-            ).setCacheWriteDataSinkFactory(null)
+                DefaultDataSource.Factory(
+                    this,
+                    OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
+                )
+            )
             .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
 
 

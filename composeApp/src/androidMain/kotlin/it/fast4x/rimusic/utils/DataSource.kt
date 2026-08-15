@@ -16,7 +16,6 @@ import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
 import okhttp3.OkHttpClient
-import okhttp3.Response
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
@@ -97,82 +96,35 @@ val Context.okHttpDataSourceFactory
  * As of mid-2026 googlevideo returns HTTP 403 for:
  *  - HEAD requests
  *  - GET without a Range header
- *  - GET with an open-ended "Range: bytes=0-"
- *  - requests for large byte windows (> ~64KB past the first ~1MB)
- *    when the n throttling parameter hasn't been decoded
- *
- * This interceptor forces a small bounded Range header when none is present
- * so ExoPlayer's initial probe doesn't get 403'd. NewPipeExtractor's n-decoder
- * (invoked from NewPipeUtils.getStreamUrl) rewrites the URL to include a
- * decoded n parameter which lifts the per-connection throttle.
+ *  - GET with an open-ended "Range: bytes=N-" (no upper bound)
+ * The CDN also throttles un-decoded n-param URLs at ~1 MB from the start,
+ * so we cap open-ended reads at 256 KB. We do NOT rewrite already-bounded
+ * ranges (e.g. cache reads / subranges at mid-file positions) — those are
+ * set intentionally by the upstream and may start at any offset within the
+ * already-cached window.
  */
 @UnstableApi
 fun buildPlaybackOkHttpClient(): OkHttpClient {
-    // As of mid-2026, googlevideo returns HTTP 403 for any request larger than ~256-512 KB
-    // unless the n-throttling parameter has been decoded. NewPipeExtractor's Rhino-based
-    // n-decoder may fail on-device (Rhino pulls in javax.script / dynalink which we strip
-    // via proguard), so we cap every outgoing Range request at CHUNK_CAP bytes and also
-    // force a bounded range when none is present. ExoPlayer's chunked reads then stitch
-    // the pieces together with sequential 206s — which are all permitted even on a raw URL.
-    val CHUNK_CAP = 262144L  // 256 KB
+    val CHUNK_CAP = 262144L // 256 KB
+    fun patch(req: okhttp3.Request): okhttp3.Request {
+        if (!req.url.host.endsWith(".googlevideo.com")) return req
+        var r = req
+        if (r.method == "HEAD") r = r.newBuilder().get().build()
+        val range = r.header("Range")
+        when {
+            range == null -> {
+                r = r.newBuilder().header("Range", "bytes=0-${CHUNK_CAP - 1}").build()
+            }
+            range.matches(Regex("(?i)bytes=\\d+-\\s*")) -> {
+                val start = range.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
+                r = r.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
+            }
+        }
+        return r
+    }
     val builder = OkHttpClient.Builder()
-        .addInterceptor { chain ->
-            val req0 = chain.request()
-            var req = req0
-            if (req.url.host.endsWith(".googlevideo.com")) {
-                if (req.method == "HEAD") {
-                    req = req.newBuilder().get().build()
-                }
-                val range = req.header("Range")
-                when {
-                    range == null -> {
-                        req = req.newBuilder().header("Range", "bytes=0-${CHUNK_CAP - 1}").build()
-                    }
-                    range.matches(Regex("(?i)bytes=(\\d+)-\\s*")) -> {
-                        val start = range.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
-                        req = req.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
-                    }
-                    range.matches(Regex("(?i)bytes=(\\d+)-(\\d+)")) -> {
-                        // Clamp request size to CHUNK_CAP
-                        val m = Regex("(?i)bytes=(\\d+)-(\\d+)").find(range)!!
-                        val start = m.groupValues[1].toLong()
-                        val end = m.groupValues[2].toLong()
-                        if (end - start + 1 > CHUNK_CAP) {
-                            req = req.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
-                        }
-                    }
-                }
-                if (req !== req0) {
-                    println("buildPlaybackOkHttpClient: rewrote ${req0.method} Range=${req0.header("Range")} -> Range=${req.header("Range")} host=${req.url.host}")
-                }
-            }
-            chain.proceed(req)
-        }
-        .addNetworkInterceptor { chain ->
-            val req0 = chain.request()
-            var req = req0
-            if (req.url.host.endsWith(".googlevideo.com")) {
-                val range = req.header("Range")
-                when {
-                    range == null -> {
-                        req = req.newBuilder().header("Range", "bytes=0-${CHUNK_CAP - 1}").build()
-                    }
-                    range.matches(Regex("(?i)bytes=(\\d+)-\\s*")) -> {
-                        val start = range.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
-                        req = req.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
-                    }
-                    range.matches(Regex("(?i)bytes=(\\d+)-(\\d+)")) -> {
-                        val m = Regex("(?i)bytes=(\\d+)-(\\d+)").find(range)!!
-                        val start = m.groupValues[1].toLong()
-                        val end = m.groupValues[2].toLong()
-                        if (end - start + 1 > CHUNK_CAP) {
-                            req = req.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
-                        }
-                    }
-                }
-            }
-            chain.proceed(req)
-        }
+        .addInterceptor { chain -> chain.proceed(patch(chain.request())) }
+        .addNetworkInterceptor { chain -> chain.proceed(patch(chain.request())) }
     ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
     return builder.build()
 }
