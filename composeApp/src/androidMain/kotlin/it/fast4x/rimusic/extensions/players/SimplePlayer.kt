@@ -22,13 +22,12 @@ import it.fast4x.rimusic.extensions.webpotoken.PoTokenResult
 import it.fast4x.rimusic.isConnectionMetered
 import it.fast4x.rimusic.isConnectionMeteredEnabled
 import it.fast4x.rimusic.models.Format
+import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
 import okhttp3.OkHttpClient
 import timber.log.Timber
 
 object SimplePlayer {
-    private val httpClient = OkHttpClient.Builder()
-        .proxy(Environment.proxy)
-        .build()
+    private val httpClient = buildPlaybackOkHttpClient()
 
     private val poTokenGenerator = PoTokenGenerator()
 

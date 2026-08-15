@@ -12,9 +12,11 @@ import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
@@ -90,14 +92,19 @@ val Context.okHttpDataSourceFactory
     )
 
 /**
- * Build an OkHttpClient used for playback.
+ * Build the OkHttpClient used for playback.
  *
- * We force a default bounded Range header on googlevideo CDN requests so that
- * ExoPlayer's initial probe (which uses no Range or open-ended "bytes=0-") does
- * not receive a 403. As of mid-2026 googlevideo returns HTTP 403 for any request
- * without a bounded Range header, including plain HEAD. Subsequent reads use
- * bounded ranges naturally (ExoPlayer ProgressiveMediaSource issues chunked reads
- * with bounded ranges) and will overwrite this default header with their own.
+ * As of mid-2026 googlevideo returns HTTP 403 for:
+ *  - HEAD requests
+ *  - GET without a Range header
+ *  - GET with an open-ended "Range: bytes=0-"
+ *  - requests for large byte windows (> ~64KB past the first ~1MB)
+ *    when the n throttling parameter hasn't been decoded
+ *
+ * This interceptor forces a small bounded Range header when none is present
+ * so ExoPlayer's initial probe doesn't get 403'd. NewPipeExtractor's n-decoder
+ * (invoked from NewPipeUtils.getStreamUrl) rewrites the URL to include a
+ * decoded n parameter which lifts the per-connection throttle.
  */
 @UnstableApi
 fun buildPlaybackOkHttpClient(): OkHttpClient {
@@ -105,13 +112,12 @@ fun buildPlaybackOkHttpClient(): OkHttpClient {
         .addInterceptor { chain ->
             val req = chain.request()
             if (req.url.host.endsWith(".googlevideo.com") && req.header("Range") == null) {
-                // Force a bounded Range for the initial probe. ExoPlayer will replace this
-                // with proper chunk ranges for subsequent reads (Range headers are overridden
-                // by OkHttpDataSource if the DataSpec sets them).
-                val newReq = req.newBuilder()
-                    .header("Range", "bytes=0-1048575")
+                // Force a small bounded range for the initial probe. ExoPlayer will issue its
+                // own bounded Range reads on subsequent opens which pass through untouched.
+                val patched = req.newBuilder()
+                    .header("Range", "bytes=0-65535")
                     .build()
-                chain.proceed(newReq)
+                chain.proceed(patched)
             } else {
                 chain.proceed(req)
             }
@@ -230,7 +236,6 @@ class ConditionalCacheDataSourceFactory(
 
         override fun addTransferListener(transferListener: TransferListener) {
             if (::selectedFactory.isInitialized) source.addTransferListener(transferListener)
-
             transferListeners += transferListener
         }
 
