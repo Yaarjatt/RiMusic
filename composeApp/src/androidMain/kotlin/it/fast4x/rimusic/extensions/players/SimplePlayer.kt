@@ -443,8 +443,9 @@ object SimplePlayer {
     ): String? {
         return NewPipeUtils.getStreamUrl(format, videoId)
             .onFailure {
-                Timber.e("SimplePlayer findUrlOrNull Could not get stream url: $videoId")
-                println("SimplePlayer findUrlOrNull Could not get stream url: $videoId")
+                Timber.e(it, "SimplePlayer findUrlOrNull Could not get stream url: $videoId itag=${format.itag}")
+                println("SimplePlayer findUrlOrNull Could not get stream url: $videoId itag=${format.itag}: ${it.javaClass.simpleName}: ${it.message}")
+                it.printStackTrace()
             }
             .getOrNull()
     }

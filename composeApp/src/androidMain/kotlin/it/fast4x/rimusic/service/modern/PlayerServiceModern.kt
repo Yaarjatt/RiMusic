@@ -2080,7 +2080,7 @@ class PlayerServiceModern : MediaLibraryService(),
         const val SleepTimerNotificationId = 1002
         const val SleepTimerNotificationChannelId = "sleep_timer_channel_id"
 
-        const val ChunkLength = 512 * 1024L
+        const val ChunkLength = 256 * 1024L
 
 //        val PlayerErrorsToReload = arrayOf(
 //            416,
