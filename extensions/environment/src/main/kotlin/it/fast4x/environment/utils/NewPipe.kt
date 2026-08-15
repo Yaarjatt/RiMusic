@@ -78,7 +78,9 @@ object NewPipeUtils {
         runCatching {
             val rawUrl = format.url
                 ?: format.signatureCipher?.let { decodeSignatureCipher(videoId, it) }
-                ?: throw ParsingException("NewPipe in Environment Could not find format url or signatureCipher")
+                ?: throw ParsingException("NewPipe in Environment Could not find format url or signatureCipher for video $videoId itag=${format.itag}")
+
+            println("NewPipeUtils getStreamUrl: video=$videoId itag=${format.itag} rawUrlHasN=${rawUrl.contains("&n=") || rawUrl.contains("?n=")} clen=${format.contentLength}")
 
             // Always run through NewPipeExtractor's throttling-parameter (n-param) deobfuscator.
             // As of mid-2026 YouTube applies n-parameter throttling to direct (non-signatureCipher)
@@ -86,9 +88,12 @@ object NewPipeUtils {
             // This call fetches the player JS (cached per client version), runs the n-decoder,
             // and returns the fixed URL. Fail soft to the raw URL rather than breaking playback.
             return@runCatching try {
-                YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, rawUrl)
+                val deobf = YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, rawUrl)
+                val changed = deobf != rawUrl
+                println("NewPipeUtils getStreamUrl: video=$videoId n-deobfuscation changed=$changed urlLen=${deobf.length}")
+                deobf
             } catch (t: Throwable) {
-                println("NewPipeUtils n-deobfuscation failed for $videoId: ${t.message}, using raw URL")
+                println("NewPipeUtils n-deobfuscation FAILED for $videoId: ${t.javaClass.simpleName}: ${t.message}")
                 t.printStackTrace()
                 rawUrl
             }

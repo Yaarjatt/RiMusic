@@ -15,6 +15,7 @@ import it.fast4x.rimusic.Database
 import it.fast4x.rimusic.R
 import it.fast4x.rimusic.utils.asSong
 import it.fast4x.rimusic.utils.isConnectionMetered
+import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
 import it.fast4x.rimusic.utils.okHttpDataSourceFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -26,7 +27,11 @@ import it.fast4x.rimusic.extensions.players.SimplePlayer
 import it.fast4x.rimusic.getStreamingPlayerType
 import it.fast4x.rimusic.models.Format
 import it.fast4x.rimusic.service.isLocal
+import it.fast4x.rimusic.utils.InvalidHttpCodeException
+import it.fast4x.rimusic.utils.findCause
+import it.fast4x.rimusic.utils.handleRangeErrors
 import it.fast4x.rimusic.utils.isAtLeastAndroid8
+import it.fast4x.rimusic.utils.retryIf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import timber.log.Timber
@@ -173,10 +178,29 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
         //scope.launch(Dispatchers.IO) { recoverSong(mediaId, playbackData) }
 
         val streamUrl = playbackData.streamUrl
+        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
+        println("ModernDSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength}")
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri()).subrange(dataSpec.uriPositionOffset, PlayerServiceModern.ChunkLength)
     }
+        .retryIf(
+            maxRetries = 2,
+            printStackTrace = true,
+            exponential = false,
+        ) { ex ->
+            // On HTTP 403 from googlevideo, invalidate the cached URL so a fresh one is
+            // fetched (with a fresh n-param deobfuscation attempt).
+            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
+                ?: ex.findCause<InvalidHttpCodeException>()?.code
+            if (code == 403) {
+                val key = synchronized(songUrlCache) { songUrlCache.keys.firstOrNull() }
+                if (key != null) songUrlCache.remove(key)
+                println("ModernDSF: got 403, retrying with fresh URL")
+            }
+            code == 403
+        }
+        .handleRangeErrors()
 }
 
 

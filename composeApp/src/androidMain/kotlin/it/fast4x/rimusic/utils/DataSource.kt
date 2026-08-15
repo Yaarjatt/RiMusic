@@ -109,18 +109,50 @@ val Context.okHttpDataSourceFactory
 @UnstableApi
 fun buildPlaybackOkHttpClient(): OkHttpClient {
     val builder = OkHttpClient.Builder()
+        // Application interceptor: rewrites Range headers BEFORE redirects are followed.
+        // As of mid-2026 googlevideo CDN returns HTTP 403 for:
+        //  - HEAD requests
+        //  - GET without a Range header
+        //  - GET with an open-ended "Range: bytes=0-" (no upper bound)
+        // Only bounded ranges (e.g. bytes=0-65535) return 206.
         .addInterceptor { chain ->
-            val req = chain.request()
-            if (req.url.host.endsWith(".googlevideo.com") && req.header("Range") == null) {
-                // Force a small bounded range for the initial probe. ExoPlayer will issue its
-                // own bounded Range reads on subsequent opens which pass through untouched.
-                val patched = req.newBuilder()
-                    .header("Range", "bytes=0-65535")
-                    .build()
-                chain.proceed(patched)
-            } else {
-                chain.proceed(req)
+            val req0 = chain.request()
+            var req = req0
+            if (req.url.host.endsWith(".googlevideo.com")) {
+                // Never use HEAD; convert to bounded ranged GET.
+                if (req.method == "HEAD") {
+                    req = req.newBuilder().get().build()
+                }
+                val existingRange = req.header("Range")
+                if (existingRange == null) {
+                    req = req.newBuilder().header("Range", "bytes=0-65535").build()
+                } else if (existingRange.matches(Regex("(?i)bytes=\\d+-\\s*"))) {
+                    // Open-ended range (bytes=offset-) — cap to a 512KB window.
+                    val start = existingRange.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
+                    val end = start + 524287L
+                    req = req.newBuilder().header("Range", "bytes=$start-$end").build()
+                }
+                if (req !== req0) {
+                    println("buildPlaybackOkHttpClient: rewrote request ${req0.method} Range=${req0.header("Range")} -> Range=${req.header("Range")} url=${req.url.host}")
+                }
             }
+            chain.proceed(req)
+        }
+        // Network interceptor: also runs after redirects (so we patch Range on the
+        // final hop to the CDN as well).
+        .addNetworkInterceptor { chain ->
+            val req0 = chain.request()
+            var req = req0
+            if (req.url.host.endsWith(".googlevideo.com")) {
+                val existingRange = req.header("Range")
+                if (existingRange == null) {
+                    req = req.newBuilder().header("Range", "bytes=0-65535").build()
+                } else if (existingRange.matches(Regex("(?i)bytes=\\d+-\\s*"))) {
+                    val start = existingRange.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
+                    req = req.newBuilder().header("Range", "bytes=$start-${start + 524287L}").build()
+                }
+            }
+            chain.proceed(req)
         }
     ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
     return builder.build()

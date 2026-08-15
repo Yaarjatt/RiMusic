@@ -52,8 +52,8 @@ object SimplePlayer {
      * "YouTube is no longer supported in this application or device".
      */
         private val STREAM_FALLBACK_CLIENTS: Array<Context.Client> = arrayOf(
-        IOS.client,
         ANDROID_VR.client,
+        IOS.client,
         DefaultWeb3.client,
     )
 

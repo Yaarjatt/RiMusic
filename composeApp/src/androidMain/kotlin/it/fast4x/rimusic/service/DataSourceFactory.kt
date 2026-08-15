@@ -98,10 +98,23 @@ internal fun MyDownloadHelper.createSimpleDataSourceFactory(): DataSource.Factor
         }
 
         val streamUrl = playbackData.streamUrl
+        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
+        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
     }
+        .retryIf(
+            maxRetries = 2,
+            printStackTrace = true,
+            exponential = false,
+        ) { ex ->
+            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
+                ?: ex.findCause<InvalidHttpCodeException>()?.code
+            if (code == 403) println("DSF: got 403, retrying with fresh URL")
+            code == 403
+        }
+        .handleRangeErrors()
 }
 
 
@@ -169,10 +182,23 @@ internal fun MyPreCacheHelper.createSimpleDataSourceFactory(): DataSource.Factor
         }
 
         val streamUrl = playbackData.streamUrl
+        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
+        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
     }
+        .retryIf(
+            maxRetries = 2,
+            printStackTrace = true,
+            exponential = false,
+        ) { ex ->
+            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
+                ?: ex.findCause<InvalidHttpCodeException>()?.code
+            if (code == 403) println("DSF: got 403, retrying with fresh URL")
+            code == 403
+        }
+        .handleRangeErrors()
 }
 
 @OptIn(UnstableApi::class)
@@ -238,10 +264,23 @@ internal fun PlayerService.createSimpleDataSourceFactory(): DataSource.Factory {
         }
 
         val streamUrl = playbackData.streamUrl
+        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
+        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
     }
+        .retryIf(
+            maxRetries = 2,
+            printStackTrace = true,
+            exponential = false,
+        ) { ex ->
+            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
+                ?: ex.findCause<InvalidHttpCodeException>()?.code
+            if (code == 403) println("DSF: got 403, retrying with fresh URL")
+            code == 403
+        }
+        .handleRangeErrors()
 }
 
 //@OptIn(UnstableApi::class)

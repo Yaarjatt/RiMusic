@@ -125,6 +125,7 @@ import it.fast4x.rimusic.ui.widgets.PlayerVerticalWidget
 import it.fast4x.rimusic.utils.CoilBitmapLoader
 import it.fast4x.rimusic.utils.TimerJob
 import it.fast4x.rimusic.utils.YouTubeRadio
+import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
 import it.fast4x.rimusic.utils.activityPendingIntent
 import it.fast4x.rimusic.utils.audioQualityFormatKey
 import it.fast4x.rimusic.utils.autoLoadSongsInQueueKey
@@ -212,7 +213,6 @@ import it.fast4x.rimusic.utils.volumeBoostLevelKey
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import okhttp3.OkHttpClient
 import timber.log.Timber
 import java.io.ObjectInputStream
 import java.io.ObjectOutputStream
@@ -1249,13 +1249,8 @@ class PlayerServiceModern : MediaLibraryService(),
                     .setUpstreamDataSourceFactory(
                         DefaultDataSource.Factory(
                             this,
-                            OkHttpDataSource.Factory(
-                                OkHttpClient
-                                    .Builder()
-                                    .proxy(Environment.proxy)
-                                    .build(),
-                            ),
-                        ),
+                            OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
+                        )
                     ),
             ).setCacheWriteDataSinkFactory(null)
             .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)

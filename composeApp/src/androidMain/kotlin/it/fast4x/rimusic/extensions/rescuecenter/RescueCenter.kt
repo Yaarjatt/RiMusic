@@ -57,6 +57,7 @@ fun RescueScreen(
 ) {
 
     var isExportingCrashLog by remember { mutableStateOf(false) }
+    var isExportingDebugLog by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var isImporting by remember { mutableStateOf(false) }
 
@@ -65,48 +66,66 @@ fun RescueScreen(
     var fileName by remember {
         mutableStateOf("")
     }
-    val exportLauncher =
+
+    fun makeLauncher(logFileName: String) =
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
             if (uri == null) return@rememberLauncherForActivityResult
-
-            val file =
-                File(context.filesDir.resolve("logs"),
-                    "RiMusic_crash_log.txt"
-                )
+            val file = File(context.filesDir.resolve("logs"), logFileName)
             if (!file.exists()) {
                 SmartMessage(noLogAvailable, type = PopupType.Info, context = context)
                 return@rememberLauncherForActivityResult
             }
-
             context.applicationContext.contentResolver.openOutputStream(uri)
                 ?.use { outputStream ->
-                    FileInputStream( file ).use { inputStream ->
+                    FileInputStream(file).use { inputStream ->
                         inputStream.copyTo(outputStream)
                     }
                 }
-
         }
+
+    val exportCrashLauncher = makeLauncher("RiMusic_crash_log.txt")
+    val exportDebugLogLauncher = makeLauncher("RiMusic_log.txt")
+
+    fun launchExport(launcher: androidx.activity.result.ActivityResultLauncher<String>, prefix: String) {
+        try {
+            @SuppressLint("SimpleDateFormat")
+            val dateFormat = SimpleDateFormat("yyyyMMddHHmmss")
+            launcher.launch("${prefix}_${fileName.take(20)}_${dateFormat.format(Date())}")
+        } catch (e: ActivityNotFoundException) {
+            SmartMessage(
+                "Couldn't find an application to create documents",
+                type = PopupType.Warning,
+                context = context
+            )
+        }
+    }
 
     if (isExportingCrashLog) {
         InputTextDialog(
             onDismiss = {
                 isExportingCrashLog = false
             },
-            title = "Enter the name of log export",
+            title = "Enter the name of crash log export",
             value = "",
             placeholder = "Enter the name of log export",
             setValue = { txt ->
                 fileName = txt
-                try {
-                    @SuppressLint("SimpleDateFormat")
-                    val dateFormat = SimpleDateFormat("yyyyMMddHHmmss")
-                    exportLauncher.launch("RiMusic_CrashLog_${txt.take(20)}_${dateFormat.format(
-                        Date()
-                    )}")
-                } catch (e: ActivityNotFoundException) {
-                    SmartMessage("Couldn't find an application to create documents",
-                        type = PopupType.Warning, context = context)
-                }
+                launchExport(exportCrashLauncher, "RiMusic_CrashLog")
+            }
+        )
+    }
+
+    if (isExportingDebugLog) {
+        InputTextDialog(
+            onDismiss = {
+                isExportingDebugLog = false
+            },
+            title = "Enter the name of debug log export",
+            value = "",
+            placeholder = "Enter the name of log export",
+            setValue = { txt ->
+                fileName = txt
+                launchExport(exportDebugLogLauncher, "RiMusic_DebugLog")
             }
         )
     }
@@ -171,6 +190,16 @@ fun RescueScreen(
                     .background(colorPalette().background1),
                 onClick = {
                     isExportingCrashLog = true
+                }
+            )
+            Spacer( modifier = Modifier.height(20.dp) )
+            Title(
+                title = "Export debug log",
+                icon = R.drawable.rescue,
+                modifier = Modifier.fillMaxWidth()
+                    .background(colorPalette().background1),
+                onClick = {
+                    isExportingDebugLog = true
                 }
             )
             Spacer( modifier = Modifier.height(50.dp) )

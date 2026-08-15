@@ -18,7 +18,6 @@ import it.fast4x.rimusic.utils.coilDiskCacheMaxSizeKey
 import it.fast4x.rimusic.utils.getEnum
 import it.fast4x.rimusic.utils.isAtLeastAndroid12
 import it.fast4x.rimusic.utils.isAtLeastAndroid8
-import it.fast4x.rimusic.utils.logDebugEnabledKey
 import it.fast4x.rimusic.utils.preferences
 import timber.log.Timber
 import java.io.File
@@ -39,14 +38,12 @@ class MainApplication : Application(), ImageLoaderFactory {
         /***** CRASH LOG ALWAYS ENABLED *****/
 
         /**** LOG *********/
-        val logEnabled = preferences.getBoolean(logDebugEnabledKey, false)
-        if (logEnabled) {
-            Timber.plant(FileLoggingTree(File(dir, "RiMusic_log.txt")))
-            Timber.d("Log enabled at ${dir.absolutePath}")
-        } else {
-            Timber.uprootAll()
-            Timber.plant(Timber.DebugTree())
-        }
+        // Always plant file logging to filesDir/logs/RiMusic_log.txt so users can
+        // share logs without root / adb. DebugTree is also planted so logcat shows
+        // output when available.
+        runCatching { Timber.plant(FileLoggingTree(File(dir, "RiMusic_log.txt"))) }
+        Timber.plant(Timber.DebugTree())
+        Timber.d("Log enabled at ${dir.absolutePath}")
         /**** LOG *********/
     }
 
