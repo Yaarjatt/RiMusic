@@ -1,7 +1,6 @@
 package it.fast4x.rimusic.utils
 
 import android.content.Context
-import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
@@ -16,13 +15,73 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import timber.log.Timber
-import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
+
+
+/**
+ * OkHttp interceptor that works around YouTube's googlevideo CDN requiring a
+ * BOUNDED Range header on every request (as of mid-2026).
+ *
+ * Without this, the CDN returns HTTP 403 for: plain HEAD requests, GETs with no
+ * Range header, and GETs with an open-ended "Range: bytes=0-" header — all of
+ * which are issued by ExoPlayer's ProgressiveMediaSource during its initial
+ * probe, causing playback to fail before it starts.
+ *
+ * The fix: for requests to *.googlevideo.com only, if there is no Range header
+ * or the Range is open-ended (ends with "-"), rewrite it to a 1 MB bounded
+ * range. ExoPlayer follows up with its own proper bounded ranges once it knows
+ * the content length (returned in the first 206 via Content-Range).
+ * Also converts HEAD requests to a 1-byte ranged GET since plain HEAD is rejected.
+ */
+@UnstableApi
+class GoogleVideoRangeInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val host = request.url.host
+        if (!host.endsWith(".googlevideo.com")) return chain.proceed(request)
+
+        val rangeHeader = request.header("Range")
+        val isHead = request.method == "HEAD"
+        val openRangeRegex = Regex("(?i)bytes=\\d+-\\s*$")
+        val isOpenRange = rangeHeader != null && openRangeRegex.containsMatchIn(rangeHeader)
+        val needsFix = isHead || rangeHeader == null || isOpenRange
+        if (!needsFix) return chain.proceed(request)
+
+        val rangeToSend = when {
+            isHead -> "bytes=0-0"
+            rangeHeader == null -> "bytes=0-1048575"
+            isOpenRange -> {
+                val start = rangeHeader.substringAfter("=").substringBefore("-").trim()
+                    .toLongOrNull() ?: 0L
+                "bytes=$start-${start + 1048575}"
+            }
+            else -> rangeHeader
+        }
+
+        val newRequest = request.newBuilder().apply {
+            if (isHead) get() else method(request.method, request.body)
+            if (rangeHeader != null) removeHeader("Range")
+            addHeader("Range", rangeToSend)
+        }.build()
+
+        return chain.proceed(newRequest)
+    }
+}
+
+@UnstableApi
+fun buildPlaybackOkHttpClient(): OkHttpClient {
+    val builder = OkHttpClient.Builder()
+        .addInterceptor(GoogleVideoRangeInterceptor())
+    ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
+    return builder.build()
+}
 
 
 @UnstableApi
@@ -88,23 +147,10 @@ val Context.okHttpDataSourceFactory
     get() = DefaultDataSource.Factory(
         this,
         OkHttpDataSource
-            .Factory(okHttpClient())
-            .setUserAgent("Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Mobile Safari/537.36")
+            .Factory(buildPlaybackOkHttpClient())
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
     )
 
-private fun okHttpClient(): OkHttpClient {
-    ProxyPreferences.preference?.let {
-        return OkHttpClient.Builder()
-            .proxy(
-                getProxy(it)
-            )
-            //.connectTimeout(Duration.ofSeconds(16))
-            //.readTimeout(Duration.ofSeconds(8))
-            .build()
-    }
-    return OkHttpClient.Builder()
-        .build()
-}
 
 // Thanks to ViTune for the idea and implementation
 @UnstableApi

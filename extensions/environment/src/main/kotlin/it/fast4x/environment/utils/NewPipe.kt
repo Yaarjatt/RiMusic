@@ -75,35 +75,22 @@ object NewPipeUtils {
 
     fun getStreamUrl(format: PlayerResponse.StreamingData.Format, videoId: String): Result<String> =
         runCatching {
-            format.url?.let {
-                return@runCatching it
-            }
-            format.signatureCipher.let {
-                if (it == null) throw ParsingException("NewPipe in Environment Could not find format signatureCipher")
-                return@runCatching decodeSignatureCipher(videoId, it)
-            }
-//            format.signatureCipher?.let { signatureCipher ->
-//                val params = parseQueryString(signatureCipher)
-//                println("NewPipe in Environment getStreamUrl params ${params.toMap().map { it.key }}")
-//                val obfuscatedSignature = params["s"]
-//                    ?: throw ParsingException("NewPipe in Environment Could not parse cipher signature")
-//                val signatureParam = params["sp"]
-//                    ?: throw ParsingException("NewPipe in Environment Could not parse cipher signature parameter")
-//                val url = params["url"]?.let { URLBuilder(it) }
-//                    ?: throw ParsingException("NewPipe in Environment Could not parse cipher url")
-//                url.parameters[signatureParam] =
-//                    YoutubeJavaScriptPlayerManager.deobfuscateSignature(
-//                        videoId,
-//                        obfuscatedSignature
-//                    )
-//                println("NewPipe in Environment getStreamUrl url.parameters ${url.parameters.entries().map { it.key }}")
-//
-//                return@runCatching YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(
-//                    videoId,
-//                    url.toString()
-//                )
-//            }
-            //throw ParsingException("NewPipe in Environment Could not find format url")
+            val rawUrl = format.url
+                ?: format.signatureCipher?.let {
+                    decodeSignatureCipher(videoId, it)
+                }
+                ?: throw ParsingException("NewPipe in Environment Could not find format url or signatureCipher")
+
+            // Always run the URL through NewPipeExtractor's throttling-parameter
+            // deobfuscator. As of mid-2026 YouTube applies "n"-parameter throttling
+            // to direct (non-signatureCipher) URLs too: beyond the first ~1 MB the CDN
+            // returns HTTP 403 unless the "n" token is decoded. This call fetches the
+            // player JS (cached), decodes n, and returns a fixed URL. It is a no-op if
+            // no throttling parameter is present or already decoded.
+            YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(
+                videoId,
+                rawUrl,
+            )
         }
 
     fun decodeSignatureCipher(
@@ -131,18 +118,5 @@ object NewPipeUtils {
                 url.toString()
             )
         }
-//        try {
-//            val params = parseQueryString(signatureCipher)
-//            println("NewPipe decodeSignatureCipher params $params")
-//            val obfuscatedSignature = params["s"] ?: throw ParsingException("NewPipe in Environment Could not parse cipher signature")
-//            val signatureParam = params["sp"] ?: throw ParsingException("NewPipe in Environment Could not parse cipher signature parameter")
-//            val url = params["url"]?.let { URLBuilder(it) } ?: throw ParsingException("NewPipe in Environment Could not parse cipher url")
-//            url.parameters[signatureParam] = YoutubeJavaScriptPlayerManager.deobfuscateSignature(videoId, obfuscatedSignature)
-//            print("NewPipe in Environment decodeSignatureCipher URL $url")
-//            YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, url.toString())
-//        } catch (e: Exception) {
-//            e.printStackTrace()
-//            null
-//        }
 
 }

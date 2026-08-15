@@ -14,6 +14,7 @@ import io.ktor.client.plugins.ClientRequestException
 import it.fast4x.environment.Environment
 import it.fast4x.rimusic.Database
 import it.fast4x.rimusic.utils.asSong
+import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
 import it.fast4x.rimusic.utils.isConnectionMetered
 import it.fast4x.rimusic.utils.okHttpDataSourceFactory
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +31,6 @@ import it.fast4x.rimusic.utils.handleRangeErrors
 import it.fast4x.rimusic.utils.principalCache
 import it.fast4x.rimusic.utils.retryIf
 import kotlinx.coroutines.flow.first
-import okhttp3.OkHttpClient
 import timber.log.Timber
 import java.io.IOException
 import java.lang.InterruptedException
@@ -44,10 +44,7 @@ internal fun MyDownloadHelper.createSimpleDataSourceFactory(): DataSource.Factor
             .setCache(getDownloadCache(appContext()))
             .setUpstreamDataSourceFactory(
                 OkHttpDataSource.Factory(
-                    OkHttpClient
-                        .Builder()
-                        .proxy(Environment.proxy)
-                        .build(),
+                    buildPlaybackOkHttpClient(),
                 ),
             )
     ) { dataSpec ->
@@ -100,10 +97,7 @@ internal fun MyDownloadHelper.createSimpleDataSourceFactory(): DataSource.Factor
                 )
         }
 
-        val streamUrl = playbackData.streamUrl.let {
-            // Specify range to avoid YouTube's throttling
-            "${it}&range=0-${format.contentLength ?: 10000000}"
-        }
+        val streamUrl = playbackData.streamUrl
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
@@ -120,10 +114,7 @@ internal fun MyPreCacheHelper.createSimpleDataSourceFactory(): DataSource.Factor
             .setCache(principalCache.getInstance(appContext()))
             .setUpstreamDataSourceFactory(
                 OkHttpDataSource.Factory(
-                    OkHttpClient
-                        .Builder()
-                        .proxy(Environment.proxy)
-                        .build(),
+                    buildPlaybackOkHttpClient(),
                 ),
             )
     ){ dataSpec ->
@@ -177,10 +168,7 @@ internal fun MyPreCacheHelper.createSimpleDataSourceFactory(): DataSource.Factor
                 )
         }
 
-        val streamUrl = playbackData.streamUrl.let {
-            // Specify range to avoid YouTube's throttling
-            "${it}&range=0-${format.contentLength ?: 10000000}"
-        }
+        val streamUrl = playbackData.streamUrl
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
@@ -196,10 +184,7 @@ internal fun PlayerService.createSimpleDataSourceFactory(): DataSource.Factory {
             .setCache(principalCache.getInstance(appContext()))
             .setUpstreamDataSourceFactory(
                 OkHttpDataSource.Factory(
-                    OkHttpClient
-                        .Builder()
-                        .proxy(Environment.proxy)
-                        .build(),
+                    buildPlaybackOkHttpClient(),
                 ),
             )
     ){ dataSpec ->
@@ -252,10 +237,7 @@ internal fun PlayerService.createSimpleDataSourceFactory(): DataSource.Factory {
                 )
         }
 
-        val streamUrl = playbackData.streamUrl.let {
-            // Specify range to avoid YouTube's throttling
-            "${it}&range=0-${format.contentLength ?: 10000000}"
-        }
+        val streamUrl = playbackData.streamUrl
 
         songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
         dataSpec.withUri(streamUrl.toUri())
