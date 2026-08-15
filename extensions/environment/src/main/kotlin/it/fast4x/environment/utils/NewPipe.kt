@@ -1,6 +1,5 @@
 package it.fast4x.environment.utils
 
-import android.util.Log
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import io.ktor.util.toMap
@@ -16,7 +15,6 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ParsingException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
-import timber.log.Timber
 import java.io.IOException
 import java.net.Proxy
 
@@ -65,8 +63,6 @@ private class NewPipeDownloaderImpl(proxy: Proxy?) : Downloader() {
 
 object NewPipeUtils {
 
-    private const val TAG = "NewPipeUtils"
-
     init {
         NewPipe.init(NewPipeDownloaderImpl(Environment.proxy))
     }
@@ -74,7 +70,8 @@ object NewPipeUtils {
     fun getSignatureTimestamp(videoId: String): Result<Int> = runCatching {
         YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
     }.onFailure {
-        Timber.e(it, "NewPipeUtils getSignatureTimestamp failed for $videoId")
+        println("NewPipeUtils getSignatureTimestamp failed for $videoId: ${it.message}")
+        it.printStackTrace()
     }
 
     fun getStreamUrl(format: PlayerResponse.StreamingData.Format, videoId: String): Result<String> =
@@ -85,15 +82,14 @@ object NewPipeUtils {
 
             // Always run through NewPipeExtractor's throttling-parameter (n-param) deobfuscator.
             // As of mid-2026 YouTube applies n-parameter throttling to direct (non-signatureCipher)
-            // URLs as well: without decoding, googlevideo returns HTTP 403 on all chunks beyond
-            // the first ~1 MB. This call fetches the player JS (cached per client version),
-            // extracts and invokes the n-deobfuscation function, and returns the fixed URL.
-            // If n-deobfuscation fails for any reason, fall back to the raw URL rather than
-            // breaking playback entirely.
+            // URLs as well: without decoding, googlevideo returns HTTP 403 on chunks past ~1 MB.
+            // This call fetches the player JS (cached per client version), runs the n-decoder,
+            // and returns the fixed URL. Fail soft to the raw URL rather than breaking playback.
             return@runCatching try {
                 YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, rawUrl)
             } catch (t: Throwable) {
-                Timber.e(t, "NewPipeUtils n-deobfuscation failed for $videoId, using raw URL")
+                println("NewPipeUtils n-deobfuscation failed for $videoId: ${t.message}, using raw URL")
+                t.printStackTrace()
                 rawUrl
             }
         }
