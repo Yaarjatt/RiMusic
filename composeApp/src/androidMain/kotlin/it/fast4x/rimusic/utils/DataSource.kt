@@ -12,76 +12,14 @@ import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
-import okhttp3.Interceptor
 import okhttp3.OkHttpClient
-import okhttp3.Response
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
-
-
-/**
- * OkHttp interceptor that works around YouTube's googlevideo CDN requiring a
- * BOUNDED Range header on every request (as of mid-2026).
- *
- * Without this, the CDN returns HTTP 403 for: plain HEAD requests, GETs with no
- * Range header, and GETs with an open-ended "Range: bytes=0-" header — all of
- * which are issued by ExoPlayer's ProgressiveMediaSource during its initial
- * probe, causing playback to fail before it starts.
- *
- * The fix: for requests to *.googlevideo.com only, if there is no Range header
- * or the Range is open-ended (ends with "-"), rewrite it to a 1 MB bounded
- * range. ExoPlayer follows up with its own proper bounded ranges once it knows
- * the content length (returned in the first 206 via Content-Range).
- * Also converts HEAD requests to a 1-byte ranged GET since plain HEAD is rejected.
- */
-@UnstableApi
-class GoogleVideoRangeInterceptor : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
-        val host = request.url.host
-        if (!host.endsWith(".googlevideo.com")) return chain.proceed(request)
-
-        val rangeHeader = request.header("Range")
-        val isHead = request.method == "HEAD"
-        val openRangeRegex = Regex("(?i)bytes=\\d+-\\s*$")
-        val isOpenRange = rangeHeader != null && openRangeRegex.containsMatchIn(rangeHeader)
-        val needsFix = isHead || rangeHeader == null || isOpenRange
-        if (!needsFix) return chain.proceed(request)
-
-        val rangeToSend = when {
-            isHead -> "bytes=0-0"
-            rangeHeader == null -> "bytes=0-1048575"
-            isOpenRange -> {
-                val start = rangeHeader.substringAfter("=").substringBefore("-").trim()
-                    .toLongOrNull() ?: 0L
-                "bytes=$start-${start + 1048575}"
-            }
-            else -> rangeHeader
-        }
-
-        val newRequest = request.newBuilder().apply {
-            if (isHead) get() else method(request.method, request.body)
-            if (rangeHeader != null) removeHeader("Range")
-            addHeader("Range", rangeToSend)
-        }.build()
-
-        return chain.proceed(newRequest)
-    }
-}
-
-@UnstableApi
-fun buildPlaybackOkHttpClient(): OkHttpClient {
-    val builder = OkHttpClient.Builder()
-        .addInterceptor(GoogleVideoRangeInterceptor())
-    ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
-    return builder.build()
-}
 
 
 @UnstableApi
@@ -151,8 +89,38 @@ val Context.okHttpDataSourceFactory
             .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
     )
 
+/**
+ * Build an OkHttpClient used for playback.
+ *
+ * We force a default bounded Range header on googlevideo CDN requests so that
+ * ExoPlayer's initial probe (which uses no Range or open-ended "bytes=0-") does
+ * not receive a 403. As of mid-2026 googlevideo returns HTTP 403 for any request
+ * without a bounded Range header, including plain HEAD. Subsequent reads use
+ * bounded ranges naturally (ExoPlayer ProgressiveMediaSource issues chunked reads
+ * with bounded ranges) and will overwrite this default header with their own.
+ */
+@UnstableApi
+fun buildPlaybackOkHttpClient(): OkHttpClient {
+    val builder = OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            val req = chain.request()
+            if (req.url.host.endsWith(".googlevideo.com") && req.header("Range") == null) {
+                // Force a bounded Range for the initial probe. ExoPlayer will replace this
+                // with proper chunk ranges for subsequent reads (Range headers are overridden
+                // by OkHttpDataSource if the DataSpec sets them).
+                val newReq = req.newBuilder()
+                    .header("Range", "bytes=0-1048575")
+                    .build()
+                chain.proceed(newReq)
+            } else {
+                chain.proceed(req)
+            }
+        }
+    ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
+    return builder.build()
+}
 
-// Thanks to ViTune for the idea and implementation
+
 @UnstableApi
 class RetryingDataSourceFactory(
     private val parent: DataSource.Factory,
@@ -175,8 +143,8 @@ class RetryingDataSourceFactory(
                 } catch (ex: Throwable) {
                     lastException = ex
                     if (printStackTrace) Timber.e(
-                        /* msg = */ " RetryingDataSourceFactory Exception caught by retry mechanism",
-                        /* tr = */ ex
+                        " RetryingDataSourceFactory Exception caught by retry mechanism",
+                        ex
                     )
                     if (predicate(ex)) {
                         val time = if (exponential) 1000L * 2.0.pow(retries).toLong() else 2500L
@@ -201,14 +169,12 @@ class RetryingDataSourceFactory(
     override fun createDataSource() = Source(parent.createDataSource())
 }
 
-// Thanks to ViTune for the idea and implementation
 inline fun <reified T : Throwable> DataSource.Factory.retryIf(
     maxRetries: Int = 5,
     printStackTrace: Boolean = false,
     exponential: Boolean = true
 ) = retryIf(maxRetries, printStackTrace, exponential) { ex -> ex.findCause<T>() != null }
 
-// Thanks to ViTune for the idea and implementation
 @OptIn(UnstableApi::class)
 fun DataSource.Factory.retryIf(
     maxRetries: Int = 5,
@@ -217,7 +183,6 @@ fun DataSource.Factory.retryIf(
     predicate: (Throwable) -> Boolean
 ): DataSource.Factory = RetryingDataSourceFactory(this, maxRetries, printStackTrace, exponential, predicate)
 
-// Thanks to ViTune for the idea and implementation
 @OptIn(UnstableApi::class)
 class ConditionalCacheDataSourceFactory(
     private val cacheDataSourceFactory: CacheDataSource.Factory,
@@ -246,9 +211,9 @@ class ConditionalCacheDataSourceFactory(
                     createSource()
                 }.getOrElse {
                     if (it is UninitializedPropertyAccessException) throw PlaybackException(
-                        /* message = */ "Illegal access of data source methods before calling open()",
-                        /* cause = */ it,
-                        /* errorCode = */ PlaybackException.ERROR_CODE_UNSPECIFIED
+                        "Illegal access of data source methods before calling open()",
+                        it,
+                        PlaybackException.ERROR_CODE_UNSPECIFIED
                     ) else throw it
                 }
                 s = newSource
@@ -274,7 +239,6 @@ class ConditionalCacheDataSourceFactory(
                 if (shouldCache(dataSpec)) cacheDataSourceFactory else upstreamDataSourceFactory
 
             return runCatching {
-                // Source is still considered 'open' even when an error occurs. See DataSource::close
                 open.set(true)
                 source.open(dataSpec)
             }.getOrElse {

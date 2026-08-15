@@ -1,5 +1,6 @@
 package it.fast4x.environment.utils
 
+import android.util.Log
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import io.ktor.util.toMap
@@ -15,6 +16,7 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ParsingException
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
+import timber.log.Timber
 import java.io.IOException
 import java.net.Proxy
 
@@ -51,12 +53,10 @@ private class NewPipeDownloaderImpl(proxy: Proxy?) : Downloader() {
 
         if (response.code == 429) {
             response.close()
-
             throw ReCaptchaException("NewPipe in Environment reCaptcha Challenge requested", url)
         }
 
         val responseBodyToReturn = response.body?.string()
-
         val latestUrl = response.request.url.toString()
         return Response(response.code, response.message, response.headers.toMultimap(), responseBodyToReturn, latestUrl)
     }
@@ -65,32 +65,37 @@ private class NewPipeDownloaderImpl(proxy: Proxy?) : Downloader() {
 
 object NewPipeUtils {
 
+    private const val TAG = "NewPipeUtils"
+
     init {
         NewPipe.init(NewPipeDownloaderImpl(Environment.proxy))
     }
 
     fun getSignatureTimestamp(videoId: String): Result<Int> = runCatching {
         YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
+    }.onFailure {
+        Timber.e(it, "NewPipeUtils getSignatureTimestamp failed for $videoId")
     }
 
     fun getStreamUrl(format: PlayerResponse.StreamingData.Format, videoId: String): Result<String> =
         runCatching {
             val rawUrl = format.url
-                ?: format.signatureCipher?.let {
-                    decodeSignatureCipher(videoId, it)
-                }
+                ?: format.signatureCipher?.let { decodeSignatureCipher(videoId, it) }
                 ?: throw ParsingException("NewPipe in Environment Could not find format url or signatureCipher")
 
-            // Always run the URL through NewPipeExtractor's throttling-parameter
-            // deobfuscator. As of mid-2026 YouTube applies "n"-parameter throttling
-            // to direct (non-signatureCipher) URLs too: beyond the first ~1 MB the CDN
-            // returns HTTP 403 unless the "n" token is decoded. This call fetches the
-            // player JS (cached), decodes n, and returns a fixed URL. It is a no-op if
-            // no throttling parameter is present or already decoded.
-            YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(
-                videoId,
-                rawUrl,
-            )
+            // Always run through NewPipeExtractor's throttling-parameter (n-param) deobfuscator.
+            // As of mid-2026 YouTube applies n-parameter throttling to direct (non-signatureCipher)
+            // URLs as well: without decoding, googlevideo returns HTTP 403 on all chunks beyond
+            // the first ~1 MB. This call fetches the player JS (cached per client version),
+            // extracts and invokes the n-deobfuscation function, and returns the fixed URL.
+            // If n-deobfuscation fails for any reason, fall back to the raw URL rather than
+            // breaking playback entirely.
+            return@runCatching try {
+                YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, rawUrl)
+            } catch (t: Throwable) {
+                Timber.e(t, "NewPipeUtils n-deobfuscation failed for $videoId, using raw URL")
+                rawUrl
+            }
         }
 
     fun decodeSignatureCipher(
