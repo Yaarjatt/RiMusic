@@ -231,5 +231,33 @@ data class Context(
             )
         )
 
+        /**
+         * VISIONOS client (Apple Vision Pro / visionOS Safari).
+         * As of mid-August 2026 this is the magic client that yt-dlp has switched to as its
+         * default (clientName=VISIONOS, clientVersion=1.02, xClientName=101): it returns direct
+         * audio URLs that are NOT throttled past the ~1 MB mark that IOS hits (yt-dlp warns
+         * "ios client https formats require a GVS PO Token"). Mid- and end-of-file byte ranges
+         * return 206 with full payload, so seeking and full-song playback both work without any
+         * n-parameter deobfuscation or poToken. Requires a Safari UA, music.youtube.com referer
+         * and the standard visitorData.
+         */
+        val VISIONOS = Context(
+            Client(
+                clientName = "VISIONOS",
+                clientVersion = "1.02",
+                deviceMake = "Apple",
+                deviceModel = "RealityDevice17,1",
+                osName = "visionOS",
+                osVersion = "26.5.23O471",
+                userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+                xClientName = 101,
+                loginSupported = false,
+                loginRequired = false,
+                useSignatureTimestamp = false,
+                useWebPoTokens = false,
+                referer = "https://music.youtube.com/",
+            )
+        )
+
     }
 }

@@ -13,6 +13,7 @@ import it.fast4x.environment.models.Context.Companion.ANDROID_VR
 import it.fast4x.environment.models.Context.Companion.DefaultWeb3
 import it.fast4x.environment.models.Context.Companion.IOS
 import it.fast4x.environment.models.Context.Companion.TVHTML5_SIMPLY_EMBEDDED_PLAYER
+import it.fast4x.environment.models.Context.Companion.VISIONOS
 import it.fast4x.environment.models.PlayerResponse
 import it.fast4x.environment.utils.NewPipeUtils
 import it.fast4x.rimusic.enums.AudioQualityFormat
@@ -52,6 +53,7 @@ object SimplePlayer {
      * "YouTube is no longer supported in this application or device".
      */
         private val STREAM_FALLBACK_CLIENTS: Array<Context.Client> = arrayOf(
+        VISIONOS.client,
         ANDROID_VR.client,
         IOS.client,
         DefaultWeb3.client,
