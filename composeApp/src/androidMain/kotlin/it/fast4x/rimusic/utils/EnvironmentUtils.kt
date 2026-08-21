@@ -1,9 +1,11 @@
 package it.fast4x.rimusic.utils
 
 import android.content.Context
+import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.EnvironmentPreferenceItem
 import it.fast4x.environment.utils.EnvironmentPreferences
 import it.fast4x.rimusic.R
+import kotlinx.coroutines.runBlocking
 
 fun InitializeEnvironment(context: Context) {
     EnvironmentPreferences.preference = EnvironmentPreferenceItem(
@@ -25,7 +27,7 @@ fun InitializeEnvironment(context: Context) {
         p15 = context.resources.getString(R.string.env_kuSdQLhP8I),
         p16 = context.resources.getString(R.string.env_QrgDKwvam1),
         p17 = context.resources.getString(R.string.env_wLwNESpPtV),
-        p18 = context. resources.getString(R.string.env_JJUQaehRFg),
+        p18 = context.resources.getString(R.string.env_JJUQaehRFg),
         p19 = context.resources.getString(R.string.env_i7WX2bHV6R),
         p20 = context.resources.getString(R.string.env_XpiuASubrV),
         p21 = context.resources.getString(R.string.env_lOlIIVw38L),
@@ -36,7 +38,7 @@ fun InitializeEnvironment(context: Context) {
         p26 = context.resources.getString(R.string.env_ye6KGLZL7n),
         p27 = context.resources.getString(R.string.env_ec09m20YH5),
         p28 = context.resources.getString(R.string.env_LDRlbOvbF1),
-        p29 = context. resources.getString(R.string.env_EEqX0yizf2),
+        p29 = context.resources.getString(R.string.env_EEqX0yizf2),
         p30 = context.resources.getString(R.string.env_i3BRhLrV1v),
         p31 = context.resources.getString(R.string.env_MApdyHLMyJ),
         p32 = context.resources.getString(R.string.env_hizI7yLjL4),
@@ -51,7 +53,23 @@ fun InitializeEnvironment(context: Context) {
         p41 = context.resources.getString(R.string.env_eZueG672lt),
         p42 = context.resources.getString(R.string.env_WkUFhXtC3G),
         p43 = context.resources.getString(R.string.env_z4Xe47r8Vs),
+    )
 
-
-        )
+    // Fetch a fresh visitorData from YouTube before any player requests run.
+    // Without a valid, non-stale visitorData, anonymous clients like VISIONOS
+    // return "Sign in to confirm you're not a bot" after the first ~1 MB of audio
+    // (observed as playback stopping at ~56% of every song in v8). Run synchronously
+    // so the first song request always uses a fresh visitor id.
+    runCatching {
+        val fresh = runBlocking { Environment.getInitialVisitorData().getOrNull() }
+        if (!fresh.isNullOrEmpty() && fresh != "null") {
+            Environment.visitorData = fresh
+            println("InitializeEnvironment: fetched fresh visitorData=${fresh.take(40)}...")
+        } else {
+            println("InitializeEnvironment: getInitialVisitorData returned empty, using built-in default")
+        }
+    }.onFailure {
+        println("InitializeEnvironment: getInitialVisitorData failed: ${it.message}")
+        it.printStackTrace()
+    }
 }

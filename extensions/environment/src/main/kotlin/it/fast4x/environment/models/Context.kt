@@ -46,13 +46,10 @@ data class Context(
             visitorData: String?,
             //dataSyncId: String?
         ) = Context(
-            client = Client(
-                clientName = clientName,
-                clientVersion = clientVersion,
-                osVersion = osVersion,
+            client = this.copy(
                 gl = locale.gl,
                 hl = locale.hl,
-                visitorData = visitorData
+                visitorData = visitorData,
             ),
 //            user = User(
 //                onBehalfOfUser = dataSyncId

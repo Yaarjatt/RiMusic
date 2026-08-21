@@ -587,6 +587,10 @@ object Environment {
             append("X-YouTube-Client-Name", "${clientType.xClientName ?: 1}")
             append("X-YouTube-Client-Version", clientType.clientVersion)
             append("X-Origin", _XsHo8IdebO)
+            // Always send visitor id header; YouTube uses it for bot-detection
+            // and non-logged-in clients (VISIONOS/IOS/ANDROID_VR) get LOGIN_REQUIRED
+            // without it when the request body's context.client.visitorData is stale.
+            append("X-Goog-Visitor-Id", this@Environment.visitorData)
             if (clientType.referer != null) {
                 append("Referer", clientType.referer)
             }
