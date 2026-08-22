@@ -162,11 +162,9 @@ private fun makeResolver(
             )
         }
 
-        val builder = dataSpec.buildUpon().setUri(streamUrl.toUri())
-        if (contentLength != null && contentLength > 0L && dataSpec.length == -1L) {
-            builder.setLength(contentLength)
-        }
-        builder.build()
+        dataSpec.buildUpon()
+            .setUri(streamUrl.toUri())
+            .build()
     }
 }
 

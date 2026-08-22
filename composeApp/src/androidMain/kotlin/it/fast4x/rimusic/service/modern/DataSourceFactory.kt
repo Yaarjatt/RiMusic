@@ -59,8 +59,8 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
         )
     val upstreamFactory = DefaultDataSource.Factory(this, httpUpstreamFactory)
 
-    // Single-tier playback cache: principalCache in front of network.
-    // CacheDataSource handles reading from cache when available, and writing through to upstream.
+    // Simple single-tier playback cache: principalCache in front of network.
+    // Downloads are handled separately by MyDownloadHelper; online playback uses one cache.
     val cacheFactory = CacheDataSource.Factory()
         .setCache(cache)
         .setUpstreamDataSourceFactory(upstreamFactory)
@@ -154,12 +154,9 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
         // Replace the placeholder media-id URI with the signed CDN URL.
         // Do NOT call .subrange() or cap DataSpec.length — ExoPlayer manages chunking.
         // The OkHttp interceptor will bound any missing/open-ended Range headers to 2 MB.
-        val builder = dataSpec.buildUpon().setUri(streamUrl.toUri())
-        if (contentLength != null && contentLength > 0L && dataSpec.length == -1L) {
-            // Hint the expected content length when ExoPlayer hasn't set one.
-            builder.setLength(contentLength)
-        }
-        builder.build()
+        dataSpec.buildUpon()
+            .setUri(streamUrl.toUri())
+            .build()
     }
         .retryIf(
             maxRetries = 3,
