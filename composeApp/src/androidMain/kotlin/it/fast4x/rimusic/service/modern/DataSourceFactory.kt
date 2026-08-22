@@ -115,12 +115,10 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
         // to the network — even if some bytes are cached, CacheDataSource will open
         // the upstream DataSource for the uncached portion and needs a valid URL.
         var streamUrl: String? = null
-        var knownLength: Long? = null
 
         val cached = songUrlCache[mediaId]
         if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
             streamUrl = cached.url
-            knownLength = cached.contentLength
         }
 
         if (streamUrl == null) {
@@ -153,7 +151,6 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
 
             val format = playbackData.format
             streamUrl = playbackData.streamUrl
-            knownLength = format.contentLength
 
             Database.asyncTransaction {
                 if (songExist(mediaId) > 0) upsert(

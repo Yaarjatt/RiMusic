@@ -94,12 +94,10 @@ private fun makeResolver(
 
         // Resolve signed CDN URL (memory cache → InnerTube API).
         var streamUrl: String? = null
-        var knownLength: Long? = null
 
         val cached = songUrlCache[mediaId]
         if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
             streamUrl = cached.url
-            knownLength = cached.contentLength
         }
 
         if (streamUrl == null) {
@@ -132,7 +130,6 @@ private fun makeResolver(
 
             val format = playbackData.format
             streamUrl = playbackData.streamUrl
-            knownLength = format.contentLength
 
             Database.asyncTransaction {
                 if (songExist(mediaId) > 0) upsert(
