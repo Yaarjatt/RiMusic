@@ -1249,8 +1249,8 @@ class PlayerServiceModern : MediaLibraryService(),
                         .setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15")
                         .setDefaultRequestProperties(
                             mapOf(
-                                "Referer" to "https://music.youtube.com/",
-                                "Origin" to "https://music.youtube.com",
+                                "Referer" to "https://www.youtube.com/",
+                                "Origin" to "https://www.youtube.com",
                             )
                         )
                 )

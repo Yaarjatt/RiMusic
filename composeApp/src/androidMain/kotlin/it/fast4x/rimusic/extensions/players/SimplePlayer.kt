@@ -52,13 +52,12 @@ object SimplePlayer {
      * TVHTML5_SIMPLY_EMBEDDED_PLAYER, which YouTube has started rejecting with
      * "YouTube is no longer supported in this application or device".
      */
-    // IOS first: native YouTube iOS client is the most reliable for direct audio URLs
-    // (no poToken/signatureCipher, no GVS throttling, works with proper UA/Referer even
-    // for non-logged-in requests). VISIONOS is kept as fallback but has started triggering
-    // bot-detection more often as of Aug 2026. ANDROID_VR and WEB are last-resort fallbacks.
+    // VISIONOS first: matches yt-dlp's working client (www.youtube.com endpoint, correct
+    // headers/timeZone/playbackContext) which returns unthrottled signed googlevideo URLs
+    // playable at any byte offset. IOS and ANDROID_VR follow as fallbacks, DefaultWeb3 last.
     private val STREAM_FALLBACK_CLIENTS: Array<Context.Client> = arrayOf(
-        IOS.client,
         VISIONOS.client,
+        IOS.client,
         ANDROID_VR.client,
         DefaultWeb3.client,
     )

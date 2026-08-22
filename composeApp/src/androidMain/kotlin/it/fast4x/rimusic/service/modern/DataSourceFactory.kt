@@ -34,6 +34,8 @@ import java.net.UnknownHostException
 
 
 private const val STREAM_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+private const val STREAM_REFERER = "https://www.youtube.com/"
+private const val STREAM_ORIGIN = "https://www.youtube.com"
 
 private data class CachedUrl(
     val url: String,
@@ -45,42 +47,37 @@ private data class CachedUrl(
 internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineScope): DataSource.Factory {
     val songUrlCache = HashMap<String, CachedUrl>()
 
-    val upstreamFactory = DefaultDataSource.Factory(
-        this,
-        OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
-            .setUserAgent(STREAM_UA)
-            .setDefaultRequestProperties(
-                mapOf(
-                    "Referer" to "https://music.youtube.com/",
-                    "Origin" to "https://music.youtube.com",
-                )
+    // Single network upstream (OkHttp + our Range/UA interceptor) wrapped in DefaultDataSource
+    // for non-http URIs (file://, content://, asset://, etc.).
+    val httpUpstreamFactory = OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
+        .setUserAgent(STREAM_UA)
+        .setDefaultRequestProperties(
+            mapOf(
+                "Referer" to STREAM_REFERER,
+                "Origin" to STREAM_ORIGIN,
             )
-    )
+        )
+    val upstreamFactory = DefaultDataSource.Factory(this, httpUpstreamFactory)
 
-    // Cache chain: downloadCache (read-only, user-downloaded songs) → principalCache (read-write, streaming buffer) → network.
+    // Single-tier playback cache: principalCache in front of network.
+    // CacheDataSource handles reading from cache when available, and writing through to upstream.
     val cacheFactory = CacheDataSource.Factory()
         .setCache(cache)
-        .setUpstreamDataSourceFactory(
-            CacheDataSource.Factory()
-                .setCache(downloadCache)
-                .setUpstreamDataSourceFactory(upstreamFactory)
-                .setCacheWriteDataSinkFactory(null) // never write into download cache during playback
-                .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
-        )
+        .setUpstreamDataSourceFactory(upstreamFactory)
         .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
 
     return ResolvingDataSource.Factory(cacheFactory) resolver@{ dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
 
-        // If the URI is already an http(s) URL, this open call is for a
-        // previously-resolved network URI being passed through the chain
-        // (e.g. internal redirect/cache miss handling). Leave it untouched.
+        // Pass through local files unchanged.
+        if (dataSpec.isLocal) return@resolver dataSpec
+
+        // If URI is already an http(s) URL, this open is CacheDataSource re-opening the
+        // upstream for an already-resolved network URI — pass through unchanged.
         val uriStr = dataSpec.uri.toString()
         if (uriStr.startsWith("http://") || uriStr.startsWith("https://")) {
             return@resolver dataSpec
         }
-
-        if (dataSpec.isLocal) return@resolver dataSpec
 
         // Ensure current song is in DB
         val mediaItem = runBlocking {
@@ -90,37 +87,14 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
             if (mediaItem != null) insert(mediaItem.asSong)
         }
 
-        // If the entire requested range is fully present in EITHER cache
-        // (download cache or streaming principal cache), pass the dataSpec
-        // through unchanged — CacheDataSource will serve entirely from cache
-        // and never open the upstream network source.
-        val requestedLength = if (dataSpec.length >= 0) dataSpec.length else Long.MAX_VALUE
-        val isFullyDownloaded = try {
-            downloadCache.isCached(mediaId, dataSpec.position, requestedLength)
-        } catch (e: Exception) {
-            println("ModernDSF: downloadCache.isCached failed for $mediaId: ${e.message}")
-            false
-        }
-        val isFullyCached = try {
-            cache.isCached(mediaId, dataSpec.position, requestedLength)
-        } catch (e: Exception) {
-            println("ModernDSF: cache.isCached failed for $mediaId: ${e.message}")
-            false
-        }
-        if (isFullyDownloaded || isFullyCached) {
-            println("ModernDSF: $mediaId fully cached/downloaded at pos=${dataSpec.position} (downloaded=$isFullyDownloaded, cached=$isFullyCached)")
-            return@resolver dataSpec
-        }
-
         // Resolve the signed CDN URL (from in-memory cache or fresh InnerTube call).
-        // We ALWAYS need the real network URL when there's any possibility of going
-        // to the network — even if some bytes are cached, CacheDataSource will open
-        // the upstream DataSource for the uncached portion and needs a valid URL.
         var streamUrl: String? = null
+        var contentLength: Long? = null
 
         val cached = songUrlCache[mediaId]
         if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
             streamUrl = cached.url
+            contentLength = cached.contentLength
         }
 
         if (streamUrl == null) {
@@ -153,6 +127,7 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
 
             val format = playbackData.format
             streamUrl = playbackData.streamUrl
+            contentLength = format.contentLength
 
             Database.asyncTransaction {
                 if (songExist(mediaId) > 0) upsert(
@@ -168,20 +143,23 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
             }
 
             val host = Uri.parse(streamUrl).host ?: ""
-            println("ModernDSF resolved $mediaId itag=${format.itag} host=$host clen=${format.contentLength} pos=${dataSpec.position} len=${dataSpec.length}")
+            println("ModernDSF resolved $mediaId itag=${format.itag} host=$host clen=$contentLength pos=${dataSpec.position} len=${dataSpec.length}")
             songUrlCache[mediaId] = CachedUrl(
                 url = streamUrl,
-                contentLength = format.contentLength,
+                contentLength = contentLength,
                 expiresAt = System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L),
             )
         }
 
-        // Replace the placeholder URI (video id) with the signed CDN URL.
-        // Cache key stays as the mediaId (set via setCustomCacheKey when building
-        // the MediaItem), so caching continues to work across URL refreshes.
-        dataSpec.buildUpon()
-            .setUri(streamUrl.toUri())
-            .build()
+        // Replace the placeholder media-id URI with the signed CDN URL.
+        // Do NOT call .subrange() or cap DataSpec.length — ExoPlayer manages chunking.
+        // The OkHttp interceptor will bound any missing/open-ended Range headers to 2 MB.
+        val builder = dataSpec.buildUpon().setUri(streamUrl.toUri())
+        if (contentLength != null && contentLength > 0L && dataSpec.length == -1L) {
+            // Hint the expected content length when ExoPlayer hasn't set one.
+            builder.setLength(contentLength)
+        }
+        builder.build()
     }
         .retryIf(
             maxRetries = 3,
@@ -191,7 +169,7 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
             val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
                 ?: ex.findCause<InvalidHttpCodeException>()?.code
             if (code == 403 || code == 416) {
-                // Drop cached signed URL so the resolver re-fetches a fresh one on retry.
+                // Drop all cached signed URLs so the resolver re-fetches fresh ones on retry.
                 synchronized(songUrlCache) { songUrlCache.clear() }
                 println("ModernDSF: got HTTP $code, clearing cached URL and retrying with a fresh one")
             }

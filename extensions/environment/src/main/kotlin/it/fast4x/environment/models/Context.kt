@@ -32,14 +32,22 @@ data class Context(
         val osVersion: String? = null,
         val acceptHeader: String? = null,
         val xClientName: Int? = null,
+        val timeZone: String? = null,
+        val utcOffsetMinutes: Int? = null,
+        /** Origin/host to use in request header and URL (e.g. "www.youtube.com" vs "music.youtube.com"). */
+        val apiHost: String? = null,
 
         val loginSupported: Boolean = false,
         val loginRequired: Boolean = false,
         val useSignatureTimestamp: Boolean = false,
         val useWebPoTokens: Boolean = false,
         val isEmbedded: Boolean = false,
-        // val origin: String? = null,
-        // val referer: String? = null,
+        val sendPlaybackContext: Boolean = false,
+        /**
+         * When true, toContext() will NOT override hl/gl with the device locale.
+         * Used by VISIONOS which must match yt-dlp's exact payload (hl="en", no gl).
+         */
+        val noLocaleOverrides: Boolean = false,
     ){
         fun toContext(
             locale: EnvironmentLocale,
@@ -47,8 +55,8 @@ data class Context(
             //dataSyncId: String?
         ) = Context(
             client = this.copy(
-                gl = locale.gl,
-                hl = locale.hl,
+                gl = if (noLocaleOverrides) this.gl else locale.gl,
+                hl = if (noLocaleOverrides) this.hl else locale.hl,
                 visitorData = visitorData,
             ),
 //            user = User(
@@ -80,8 +88,9 @@ data class Context(
         headers {
             client.referer?.let { append("Referer", it) }
             append("X-Youtube-Bootstrap-Logged-In", "false")
-            append("X-YouTube-Client-Name", client.clientName)
-            append("X-YouTube-Client-Version", client.clientVersion)
+            // Match yt-dlp header spelling: "X-Youtube-Client-Name" (lowercase t in Youtube)
+            append("X-Youtube-Client-Name", "${client.xClientName ?: 1}")
+            append("X-Youtube-Client-Version", client.clientVersion)
         }
     }
 
@@ -180,11 +189,6 @@ data class Context(
 
         /**
          * Hardcoded IOS client fallback.
-         * As of mid-2026 YouTube's /youtubei/v1/player returns direct playable audio URLs
-         * (no poToken/signatureCipher) when called with the IOS client and a matching iOS UA / version.
-         * This does not require login or a poToken and is used as a stream fallback when the
-         * primary WEB_REMIX / potoken path fails (which often happens in self-built debug builds
-         * or on devices with an outdated WebView).
          */
         val IOS = Context(
             Client(
@@ -208,9 +212,6 @@ data class Context(
 
         /**
          * Hardcoded ANDROID_VR client fallback.
-         * Same reasoning as IOS: returns direct audio URLs without poToken / login.
-         * yt-dlp uses this client (clientName=ANDROID_VR, v1.60.19, x-client-name=28) very
-         * successfully as its primary non-web client.
          */
         val ANDROID_VR = Context(
             Client(
@@ -229,30 +230,38 @@ data class Context(
         )
 
         /**
-         * VISIONOS client (Apple Vision Pro / visionOS Safari).
-         * As of mid-August 2026 this is the magic client that yt-dlp has switched to as its
-         * default (clientName=VISIONOS, clientVersion=1.02, xClientName=101): it returns direct
-         * audio URLs that are NOT throttled past the ~1 MB mark that IOS hits (yt-dlp warns
-         * "ios client https formats require a GVS PO Token"). Mid- and end-of-file byte ranges
-         * return 206 with full payload, so seeking and full-song playback both work without any
-         * n-parameter deobfuscation or poToken. Requires a Safari UA, music.youtube.com referer
-         * and the standard visitorData.
+         * VISIONOS client (Apple Vision Pro / visionOS Safari) — yt-dlp's working client as of Aug 2026.
+         * Payload must match yt-dlp byte-for-byte to get unthrottled signed CDN URLs:
+         *  - POST to https://www.youtube.com/youtubei/v1/player (NOT music.youtube.com)
+         *  - X-Youtube-Client-Name: 101, X-Youtube-Client-Version: 1.02 (lowercase 't' in "Youtube")
+         *  - Origin: https://www.youtube.com, Safari-on-macOS UA
+         *  - client JSON: hl=en, timeZone=UTC, utcOffsetMinutes=0, no platform, no gl,
+         *    userAgent set in the JSON body
+         *  - playbackContext with html5Preference=HTML5_PREF_WANTS + fresh signatureTimestamp
          */
         val VISIONOS = Context(
             Client(
                 clientName = "VISIONOS",
                 clientVersion = "1.02",
+                hl = "en",
+                gl = null,
+                platform = null,
                 deviceMake = "Apple",
                 deviceModel = "RealityDevice17,1",
                 osName = "visionOS",
                 osVersion = "26.5.23O471",
                 userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
                 xClientName = 101,
+                timeZone = "UTC",
+                utcOffsetMinutes = 0,
+                apiHost = "www.youtube.com",
+                referer = "https://www.youtube.com/",
                 loginSupported = false,
                 loginRequired = false,
-                useSignatureTimestamp = false,
+                useSignatureTimestamp = true,
                 useWebPoTokens = false,
-                referer = "https://music.youtube.com/",
+                sendPlaybackContext = true,
+                noLocaleOverrides = true,
             )
         )
 

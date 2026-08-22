@@ -580,13 +580,17 @@ object Environment {
     }
 
     fun HttpRequestBuilder.setLogin(clientType: Client = DefaultWeb.client, setLogin: Boolean = false) {
-        println("HttpRequestBuilder.setLogin CALLED")
+        println("HttpRequestBuilder.setLogin CALLED for client=${clientType.clientName} apiHost=${clientType.apiHost}")
         contentType(ContentType.Application.Json)
+        // Determine the Origin to send: per-client apiHost takes precedence over default music host.
+        val origin = if (clientType.apiHost != null) "https://${clientType.apiHost}" else _XsHo8IdebO
         headers {
             append("X-Goog-Api-Format-Version", "1")
-            append("X-YouTube-Client-Name", "${clientType.xClientName ?: 1}")
-            append("X-YouTube-Client-Version", clientType.clientVersion)
-            append("X-Origin", _XsHo8IdebO)
+            // yt-dlp uses "X-Youtube-Client-Name" (lowercase 't' in Youtube) — match exactly.
+            append("X-Youtube-Client-Name", "${clientType.xClientName ?: 1}")
+            append("X-Youtube-Client-Version", clientType.clientVersion)
+            append("X-Origin", origin)
+            append("Origin", origin)
             // Always send visitor id header; YouTube uses it for bot-detection
             // and non-logged-in clients (VISIONOS/IOS/ANDROID_VR) get LOGIN_REQUIRED
             // without it when the request body's context.client.visitorData is stale.
@@ -627,12 +631,14 @@ object Environment {
 
     fun HttpRequestBuilder.setHeaders(clientType: Client = DefaultWeb.client, setLogin: Boolean = false) {
         contentType(ContentType.Application.Json)
+        val origin = if (clientType.apiHost != null) "https://${clientType.apiHost}" else _XsHo8IdebO
         headers {
             if (setLogin)
                 append("X-Youtube-Bootstrap-Logged-In", "true")
-            append("X-YouTube-Client-Name", clientType.xClientName.toString())
-            append("X-YouTube-Client-Version", clientType.clientVersion)
-            append("X-Origin", _XsHo8IdebO)
+            append("X-Youtube-Client-Name", clientType.xClientName.toString())
+            append("X-Youtube-Client-Version", clientType.clientVersion)
+            append("X-Origin", origin)
+            append("Origin", origin)
             if (clientType.referer != null) {
                 append("Referer", clientType.referer)
             }
@@ -910,7 +916,12 @@ object Environment {
         playlistId: String?,
         signatureTimestamp: Int?,
         webPlayerPot: String?,
-    ) = client.post(_cdSL7DrPbA) {
+    ) = client.post(
+        // When the client specifies an apiHost (e.g. VISIONOS → www.youtube.com), post to
+        // that host's /youtubei/v1/player endpoint instead of the default music.youtube.com.
+        if (clientType.apiHost != null) "https://${clientType.apiHost}${_cdSL7DrPbA}"
+        else _cdSL7DrPbA
+    ) {
         setLogin(clientType, setLogin = true)
         setBody(
             PlayerBody(
@@ -929,11 +940,21 @@ object Environment {
                     },
                 videoId = videoId,
                 playlistId = playlistId,
-                playbackContext = if (clientType.useSignatureTimestamp && signatureTimestamp != null) {
-                    PlayerBody.PlaybackContext(PlayerBody.PlaybackContext.ContentPlaybackContext(
-                        signatureTimestamp = signatureTimestamp
-                    ))
-                } else null,
+                playbackContext = when {
+                    // sendPlaybackContext clients (e.g. VISIONOS) must always send playbackContext,
+                    // using a fresh signatureTimestamp if available, falling back to the default.
+                    clientType.sendPlaybackContext -> PlayerBody.PlaybackContext(
+                        PlayerBody.PlaybackContext.ContentPlaybackContext(
+                            signatureTimestamp = signatureTimestamp
+                                ?: PlayerBody.PlaybackContext.ContentPlaybackContext().signatureTimestamp
+                        )
+                    )
+                    clientType.useSignatureTimestamp && signatureTimestamp != null ->
+                        PlayerBody.PlaybackContext(PlayerBody.PlaybackContext.ContentPlaybackContext(
+                            signatureTimestamp = signatureTimestamp
+                        ))
+                    else -> null
+                },
                 serviceIntegrityDimensions = if (clientType.useWebPoTokens && webPlayerPot != null) {
                     PlayerBody.ServiceIntegrityDimensions(webPlayerPot)
                 } else null

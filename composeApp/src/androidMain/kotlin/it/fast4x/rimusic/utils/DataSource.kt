@@ -14,7 +14,9 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import timber.log.Timber
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,6 +24,17 @@ import kotlin.math.pow
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
+
+/**
+ * Bounded byte-range size used when ExoPlayer/OkHttpDataSource opens a connection to googlevideo
+ * without an explicit Range, or with an open-ended Range (which CDN rejects with 403). 2 MiB.
+ */
+private const val STREAM_RANGE_CHUNK = 2L * 1024L * 1024L
+
+private const val STREAM_UA =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+private const val STREAM_REFERER = "https://www.youtube.com/"
+private const val STREAM_ORIGIN = "https://www.youtube.com"
 
 @UnstableApi
 class RangeHandlerDataSourceFactory(private val parent: DataSource.Factory) : DataSource.Factory {
@@ -87,50 +100,91 @@ val Context.okHttpDataSourceFactory
         this,
         OkHttpDataSource
             .Factory(buildPlaybackOkHttpClient())
-            .setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15")
+            .setUserAgent(STREAM_UA)
             .setDefaultRequestProperties(
                 mapOf(
-                    "Referer" to "https://music.youtube.com/",
-                    "Origin" to "https://music.youtube.com",
+                    "Referer" to STREAM_REFERER,
+                    "Origin" to STREAM_ORIGIN,
                 )
             )
     )
 
 /**
- * Build the OkHttpClient used for playback.
- *
- * As of mid-2026 googlevideo.com CDN (YouTube's media host) rejects
- * anonymous media requests with HTTP 403 unless they carry proper browser
- * headers: a desktop/Safari User-Agent, a music.youtube.com Referer and
- * matching Origin. HEAD requests are also rejected.
- *
- * We intercept every request to *.googlevideo.com and:
- *   1. Convert HEAD → GET (the CDN returns 403 for HEAD).
- *   2. Add a Safari-on-macOS User-Agent if none is present.
- *   3. Add Referer/Origin headers for music.youtube.com if missing.
- *
- * We do NOT tamper with Range headers. OkHttpDataSource generates its own
- * Range headers when ExoPlayer seeks or refills buffers, and signed googlevideo
- * URLs correctly serve 200 OK for full GETs and 206 Partial Content for
- * bounded ranges as long as the UA/Referer are set. Open-ended "bytes=N-"
- * ranges also work when proper headers are present.
+ * Interceptor that forces every googlevideo.com request to:
+ *  1. Use GET (never HEAD — CDN returns 403 for HEAD).
+ *  2. Carry a Safari-on-macOS User-Agent + youtube.com Referer/Origin if missing.
+ *  3. Carry a BOUNDED Range header:
+ *       - If no Range is present: "bytes=0-<STREAM_RANGE_CHUNK-1>"
+ *       - If Range is open-ended "bytes=N-": "bytes=N-<N+STREAM_RANGE_CHUNK-1>"
+ *       - If Range is already bounded (bytes=N-M): leave untouched.
+ *     This is required because googlevideo.com rejects open-ended and missing Range requests
+ *     with HTTP 403 for most videos.
+ */
+@UnstableApi
+private class GoogleVideoRangeInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        var request = chain.request()
+        if (!request.url.host.endsWith(".googlevideo.com")) {
+            return chain.proceed(request)
+        }
+
+        val b = request.newBuilder()
+
+        // HEAD → GET
+        if (request.method == "HEAD") {
+            b.get()
+        }
+
+        // UA / Referer / Origin defaults
+        if (request.header("User-Agent") == null) b.header("User-Agent", STREAM_UA)
+        if (request.header("Referer") == null) b.header("Referer", STREAM_REFERER)
+        if (request.header("Origin") == null) b.header("Origin", STREAM_ORIGIN)
+
+        // Fix up Range header.
+        val range = request.header("Range")
+        when {
+            range.isNullOrBlank() -> {
+                // No Range at all — bound from 0.
+                b.header("Range", "bytes=0-${STREAM_RANGE_CHUNK - 1}")
+                b.removeHeader("Accept-Encoding") // avoid gzip on byte ranges
+            }
+            range.startsWith("bytes=", ignoreCase = true) -> {
+                val spec = range.removePrefix("bytes=").trim()
+                val dashIdx = spec.indexOf('-')
+                if (dashIdx < 0) {
+                    // Malformed — fallback.
+                    b.header("Range", "bytes=0-${STREAM_RANGE_CHUNK - 1}")
+                } else {
+                    val start = spec.substring(0, dashIdx).trim()
+                    val end = spec.substring(dashIdx + 1).trim()
+                    val startVal = start.toLongOrNull()
+                    val endVal = end.toLongOrNull()
+                    when {
+                        // bytes=N-  (open-ended) → bound
+                        startVal != null && end.isEmpty() -> {
+                            b.header("Range", "bytes=$startVal-${startVal + STREAM_RANGE_CHUNK - 1}")
+                        }
+                        // bytes=-N  (suffix) → leave
+                        startVal == null && endVal != null -> { /* keep as-is */ }
+                        // bytes=N-M (bounded) → keep
+                        startVal != null && endVal != null -> { /* keep as-is */ }
+                        // bytes=0-  or anything weird
+                        else -> b.header("Range", "bytes=0-${STREAM_RANGE_CHUNK - 1}")
+                    }
+                }
+            }
+        }
+
+        request = b.build()
+        return chain.proceed(request)
+    }
+}
+
+/**
+ * Build the OkHttpClient used for playback against googlevideo.
  */
 @UnstableApi
 fun buildPlaybackOkHttpClient(): OkHttpClient {
-    val STREAM_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-    val STREAM_REFERER = "https://music.youtube.com/"
-    val STREAM_ORIGIN = "https://music.youtube.com"
-
-    fun patch(req: okhttp3.Request): okhttp3.Request {
-        if (!req.url.host.endsWith(".googlevideo.com")) return req
-        val b = req.newBuilder()
-        if (req.method == "HEAD") b.get()
-        if (req.header("User-Agent") == null) b.header("User-Agent", STREAM_UA)
-        if (req.header("Referer") == null) b.header("Referer", STREAM_REFERER)
-        if (req.header("Origin") == null) b.header("Origin", STREAM_ORIGIN)
-        return b.build()
-    }
-
     val builder = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -139,10 +193,9 @@ fun buildPlaybackOkHttpClient(): OkHttpClient {
         .retryOnConnectionFailure(true)
         .followRedirects(true)
         .followSslRedirects(true)
-        // Application interceptor — runs once per logical call before redirects/cache.
-        .addInterceptor { chain -> chain.proceed(patch(chain.request())) }
-        // Network interceptor — runs on every actual network request (post-redirect).
-        .addNetworkInterceptor { chain -> chain.proceed(patch(chain.request())) }
+        // Application interceptor runs once before cache/redirects — enforces bounded Range,
+        // proper UA/Referer/Origin, and HEAD→GET.
+        .addInterceptor(GoogleVideoRangeInterceptor())
     ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
     return builder.build()
 }

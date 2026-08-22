@@ -36,6 +36,8 @@ import java.net.UnknownHostException
 
 
 private const val STREAM_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+private const val STREAM_REFERER = "https://www.youtube.com/"
+private const val STREAM_ORIGIN = "https://www.youtube.com"
 
 private data class CachedUrl(
     val url: String,
@@ -51,8 +53,8 @@ private fun buildPlaybackUpstreamFactory(context: Context) =
             .setUserAgent(STREAM_UA)
             .setDefaultRequestProperties(
                 mapOf(
-                    "Referer" to "https://music.youtube.com/",
-                    "Origin" to "https://music.youtube.com",
+                    "Referer" to STREAM_REFERER,
+                    "Origin" to STREAM_ORIGIN,
                 )
             )
     )
@@ -74,10 +76,11 @@ private fun makeResolver(
     return resolver@{ dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
 
+        if (dataSpec.isLocal) return@resolver dataSpec
+
         val uriStr = dataSpec.uri.toString()
         if (uriStr.startsWith("http://") || uriStr.startsWith("https://"))
             return@resolver dataSpec
-        if (dataSpec.isLocal) return@resolver dataSpec
 
         // If the entire requested range is already fully present in the cache,
         // pass through — CacheDataSource will serve it without hitting the network.
@@ -97,10 +100,12 @@ private fun makeResolver(
 
         // Resolve signed CDN URL (memory cache → InnerTube API).
         var streamUrl: String? = null
+        var contentLength: Long? = null
 
         val cached = songUrlCache[mediaId]
         if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
             streamUrl = cached.url
+            contentLength = cached.contentLength
         }
 
         if (streamUrl == null) {
@@ -133,6 +138,7 @@ private fun makeResolver(
 
             val format = playbackData.format
             streamUrl = playbackData.streamUrl
+            contentLength = format.contentLength
 
             Database.asyncTransaction {
                 if (songExist(mediaId) > 0) upsert(
@@ -148,17 +154,19 @@ private fun makeResolver(
             }
 
             val host = Uri.parse(streamUrl).host ?: ""
-            println("$tag resolved $mediaId itag=${format.itag} host=$host clen=${format.contentLength} pos=${dataSpec.position} len=${dataSpec.length}")
+            println("$tag resolved $mediaId itag=${format.itag} host=$host clen=$contentLength pos=${dataSpec.position} len=${dataSpec.length}")
             songUrlCache[mediaId] = CachedUrl(
                 url = streamUrl,
-                contentLength = format.contentLength,
+                contentLength = contentLength,
                 expiresAt = System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L),
             )
         }
 
-        dataSpec.buildUpon()
-            .setUri(streamUrl.toUri())
-            .build()
+        val builder = dataSpec.buildUpon().setUri(streamUrl.toUri())
+        if (contentLength != null && contentLength > 0L && dataSpec.length == -1L) {
+            builder.setLength(contentLength)
+        }
+        builder.build()
     }
 }
 
