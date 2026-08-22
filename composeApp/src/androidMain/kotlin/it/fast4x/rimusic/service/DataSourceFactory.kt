@@ -1,6 +1,7 @@
 package it.fast4x.rimusic.service
 
 import android.content.Context
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.PlaybackException
@@ -26,6 +27,7 @@ import it.fast4x.rimusic.utils.handleRangeErrors
 import it.fast4x.rimusic.utils.principalCache
 import it.fast4x.rimusic.utils.retryIf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -144,7 +146,7 @@ private fun makeResolver(
                 )
             }
 
-            val host = android.net.Uri.parse(streamUrl).host ?: ""
+            val host = Uri.parse(streamUrl).host ?: ""
             println("$tag resolved $mediaId itag=${format.itag} host=$host clen=${format.contentLength} pos=${dataSpec.position} len=${dataSpec.length}")
             songUrlCache[mediaId] = CachedUrl(
                 url = streamUrl,

@@ -1,5 +1,6 @@
 package it.fast4x.rimusic.service.modern
 
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.PlaybackException
@@ -24,6 +25,7 @@ import it.fast4x.rimusic.utils.handleRangeErrors
 import it.fast4x.rimusic.utils.retryIf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.net.ConnectException
@@ -165,7 +167,7 @@ internal fun PlayerServiceModern.createSimpleDataSourceFactory(scope: CoroutineS
                 )
             }
 
-            val host = android.net.Uri.parse(streamUrl).host ?: ""
+            val host = Uri.parse(streamUrl).host ?: ""
             println("ModernDSF resolved $mediaId itag=${format.itag} host=$host clen=${format.contentLength} pos=${dataSpec.position} len=${dataSpec.length}")
             songUrlCache[mediaId] = CachedUrl(
                 url = streamUrl,
