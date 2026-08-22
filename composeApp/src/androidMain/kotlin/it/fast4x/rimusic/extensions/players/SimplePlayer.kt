@@ -52,10 +52,14 @@ object SimplePlayer {
      * TVHTML5_SIMPLY_EMBEDDED_PLAYER, which YouTube has started rejecting with
      * "YouTube is no longer supported in this application or device".
      */
-        private val STREAM_FALLBACK_CLIENTS: Array<Context.Client> = arrayOf(
+    // IOS first: native YouTube iOS client is the most reliable for direct audio URLs
+    // (no poToken/signatureCipher, no GVS throttling, works with proper UA/Referer even
+    // for non-logged-in requests). VISIONOS is kept as fallback but has started triggering
+    // bot-detection more often as of Aug 2026. ANDROID_VR and WEB are last-resort fallbacks.
+    private val STREAM_FALLBACK_CLIENTS: Array<Context.Client> = arrayOf(
+        IOS.client,
         VISIONOS.client,
         ANDROID_VR.client,
-        IOS.client,
         DefaultWeb3.client,
     )
 

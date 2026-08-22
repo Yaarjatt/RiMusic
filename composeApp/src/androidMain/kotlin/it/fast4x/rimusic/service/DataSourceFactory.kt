@@ -1,420 +1,223 @@
 package it.fast4x.rimusic.service
 
+import android.content.Context
 import androidx.annotation.OptIn
 import androidx.core.net.toUri
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import io.ktor.client.plugins.ClientRequestException
-import it.fast4x.environment.Environment
 import it.fast4x.rimusic.Database
-import it.fast4x.rimusic.utils.asSong
-import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
-import it.fast4x.rimusic.utils.isConnectionMetered
-import it.fast4x.rimusic.utils.okHttpDataSourceFactory
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
-import it.fast4x.rimusic.appContext
+import it.fast4x.rimusic.R
+import it.fast4x.rimusic.enums.AudioQualityFormat
 import it.fast4x.rimusic.extensions.players.SelectSimplePlayerType
-import it.fast4x.rimusic.extensions.players.SimplePlayer
 import it.fast4x.rimusic.models.Format
 import it.fast4x.rimusic.service.MyDownloadHelper.downloadCache
 import it.fast4x.rimusic.utils.InvalidHttpCodeException
+import it.fast4x.rimusic.utils.buildPlaybackOkHttpClient
 import it.fast4x.rimusic.utils.findCause
 import it.fast4x.rimusic.utils.handleRangeErrors
 import it.fast4x.rimusic.utils.principalCache
 import it.fast4x.rimusic.utils.retryIf
-import kotlinx.coroutines.flow.first
-import timber.log.Timber
-import java.io.IOException
-import java.lang.InterruptedException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+
+
+private const val STREAM_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+
+private data class CachedUrl(
+    val url: String,
+    val contentLength: Long?,
+    val expiresAt: Long,
+)
+
+@OptIn(UnstableApi::class)
+private fun buildPlaybackUpstreamFactory(context: Context) =
+    DefaultDataSource.Factory(
+        context,
+        OkHttpDataSource.Factory(buildPlaybackOkHttpClient())
+            .setUserAgent(STREAM_UA)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Referer" to "https://music.youtube.com/",
+                    "Origin" to "https://music.youtube.com",
+                )
+            )
+    )
+
+/**
+ * Build a ResolvingDataSource resolver that maps video-id DataSpecs to signed
+ * googlevideo URLs, handling in-memory URL caching, content-length tracking,
+ * database upserts, and graceful "fully cached" short-circuiting.
+ */
+@OptIn(UnstableApi::class)
+private fun makeResolver(
+    cache: Cache,
+    audioQualityFormat: AudioQualityFormat,
+    tag: String,
+    allowFullyCachedShortcut: Boolean,
+): (DataSpec) -> DataSpec {
+    val songUrlCache = HashMap<String, CachedUrl>()
+
+    return resolver@{ dataSpec ->
+        val mediaId = dataSpec.key ?: error("No media id")
+
+        val uriStr = dataSpec.uri.toString()
+        if (uriStr.startsWith("http://") || uriStr.startsWith("https://"))
+            return@resolver dataSpec
+        if (dataSpec.isLocal) return@resolver dataSpec
+
+        // If the entire requested range is already fully present in the cache,
+        // pass through — CacheDataSource will serve it without hitting the network.
+        if (allowFullyCachedShortcut) {
+            val requestedLength = if (dataSpec.length >= 0) dataSpec.length else Long.MAX_VALUE
+            val fullyCached = try {
+                cache.isCached(mediaId, dataSpec.position, requestedLength)
+            } catch (e: Exception) {
+                println("$tag: isCached failed for $mediaId: ${e.message}")
+                false
+            }
+            if (fullyCached) {
+                println("$tag: $mediaId fully cached at pos=${dataSpec.position}")
+                return@resolver dataSpec
+            }
+        }
+
+        // Resolve signed CDN URL (memory cache → InnerTube API).
+        var streamUrl: String? = null
+        var knownLength: Long? = null
+
+        val cached = songUrlCache[mediaId]
+        if (cached != null && cached.expiresAt > System.currentTimeMillis()) {
+            streamUrl = cached.url
+            knownLength = cached.contentLength
+        }
+
+        if (streamUrl == null) {
+            val playedFormat = runBlocking(Dispatchers.IO) { Database.format(mediaId).first() }
+            val playbackData = runBlocking(Dispatchers.IO) {
+                SelectSimplePlayerType(mediaId, playedFormat, audioQualityFormat)
+            }.getOrElse { throwable ->
+                when (throwable) {
+                    is PlaybackException -> throw throwable
+                    is ConnectException, is UnknownHostException ->
+                        throw PlaybackException(
+                            "No internet",
+                            throwable,
+                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                        )
+                    is SocketTimeoutException ->
+                        throw PlaybackException(
+                            "Timeout",
+                            throwable,
+                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                        )
+                    else ->
+                        throw PlaybackException(
+                            "Unknown error",
+                            throwable,
+                            PlaybackException.ERROR_CODE_REMOTE_ERROR,
+                        )
+                }
+            }
+
+            val format = playbackData.format
+            streamUrl = playbackData.streamUrl
+            knownLength = format.contentLength
+
+            Database.asyncTransaction {
+                if (songExist(mediaId) > 0) upsert(
+                    Format(
+                        songId = mediaId,
+                        itag = format.itag,
+                        mimeType = format.mimeType.split(";")[0],
+                        bitrate = format.bitrate.toLong(),
+                        contentLength = format.contentLength!!,
+                        loudnessDb = playbackData.audioConfig?.loudnessDb,
+                    )
+                )
+            }
+
+            val host = android.net.Uri.parse(streamUrl).host ?: ""
+            println("$tag resolved $mediaId itag=${format.itag} host=$host clen=${format.contentLength} pos=${dataSpec.position} len=${dataSpec.length}")
+            songUrlCache[mediaId] = CachedUrl(
+                url = streamUrl,
+                contentLength = format.contentLength,
+                expiresAt = System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L),
+            )
+        }
+
+        dataSpec.buildUpon()
+            .setUri(streamUrl.toUri())
+            .build()
+    }
+}
+
+@OptIn(UnstableApi::class)
+private fun wrapFactory(
+    baseFactory: DataSource.Factory,
+    resolver: (DataSpec) -> DataSpec,
+    urlCache: HashMap<String, CachedUrl>,
+): DataSource.Factory =
+    ResolvingDataSource.Factory(baseFactory, resolver)
+        .retryIf(maxRetries = 3, printStackTrace = true, exponential = false) { ex ->
+            val code = ex.findCause<InvalidResponseCodeException>()?.responseCode
+                ?: ex.findCause<InvalidHttpCodeException>()?.code
+            if (code == 403 || code == 416) {
+                synchronized(urlCache) { urlCache.clear() }
+                println("DSF retry: got HTTP $code, clearing cached URL for fresh fetch")
+            }
+            code == 403 || code == 416
+        }
+        .handleRangeErrors()
+
+
+/* ============ MyDownloadHelper ============ */
 
 @OptIn(UnstableApi::class)
 internal fun MyDownloadHelper.createSimpleDataSourceFactory(): DataSource.Factory {
-    val songUrlCache = HashMap<String, Pair<String, Long>>()
-    return ResolvingDataSource.Factory(
-        CacheDataSource
-            .Factory()
-            .setCache(getDownloadCache(appContext()))
-            .setUpstreamDataSourceFactory(
-                OkHttpDataSource.Factory(
-                    buildPlaybackOkHttpClient(),
-                ),
-            )
-    ) { dataSpec ->
-        val mediaId = dataSpec.key ?: error("No media id")
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-
-        val isDownloaded = try {
-            downloadCache.isCached(mediaId, dataSpec.position, length)
-        } catch (e: Exception) {
-            false
-        }
-
-        if( dataSpec.isLocal || isDownloaded ) {
-            return@Factory dataSpec
-        }
-
-        songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-            return@Factory dataSpec.withUri(it.first.toUri())
-        }
-
-        val playedFormat = runBlocking(Dispatchers.IO) { Database.format(mediaId).first() }
-        val playbackData = runBlocking(Dispatchers.IO) {
-            SelectSimplePlayerType(
-                mediaId,
-                playedFormat,
-                audioQualityFormat
-            )
-//            SimplePlayer.playerResponseForPlayback(
-//                mediaId,
-//                playedFormat = playedFormat,
-//                audioQuality = audioQualityFormat,
-//            )
-        }.getOrThrow()
-        val format = playbackData.format
-
-        Database.asyncTransaction {
-            if (songExist(mediaId) > 0)
-                upsert(
-                    Format(
-                        songId = mediaId,
-                        itag = format.itag,
-                        mimeType = format.mimeType.split(";")[0],
-                        //codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
-                        bitrate = format.bitrate.toLong(),
-                        //sampleRate = format.audioSampleRate,
-                        contentLength = format.contentLength!!,
-                        loudnessDb = playbackData.audioConfig?.loudnessDb,
-                        //playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                    ),
-                )
-        }
-
-        val streamUrl = playbackData.streamUrl
-        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
-        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
-
-        songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
-        dataSpec.withUri(streamUrl.toUri())
-    }
-        .retryIf(
-            maxRetries = 2,
-            printStackTrace = true,
-            exponential = false,
-        ) { ex ->
-            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
-                ?: ex.findCause<InvalidHttpCodeException>()?.code
-            if (code == 403) println("DSF: got 403, retrying with fresh URL")
-            code == 403
-        }
-        .handleRangeErrors()
+    val urlCache = HashMap<String, CachedUrl>()
+    val cache = getDownloadCache(appContext())
+    val base = CacheDataSource.Factory()
+        .setCache(cache)
+        .setUpstreamDataSourceFactory(buildPlaybackUpstreamFactory(appContext()))
+    val resolver = makeResolver(cache, audioQualityFormat, "DownloadDSF", allowFullyCachedShortcut = false)
+    return wrapFactory(base, resolver, urlCache)
 }
 
+
+/* ============ MyPreCacheHelper ============ */
 
 @OptIn(UnstableApi::class)
 internal fun MyPreCacheHelper.createSimpleDataSourceFactory(): DataSource.Factory {
-    val songUrlCache = HashMap<String, Pair<String, Long>>()
-    return ResolvingDataSource.Factory(
-        CacheDataSource
-            .Factory()
-            .setCache(principalCache.getInstance(appContext()))
-            .setUpstreamDataSourceFactory(
-                OkHttpDataSource.Factory(
-                    buildPlaybackOkHttpClient(),
-                ),
-            )
-    ){ dataSpec ->
-        val mediaId = dataSpec.key ?: error("No media id")
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-
-        val isCached = try {
-            cache.isCached(mediaId, dataSpec.position, length)
-        } catch (e: Exception) {
-            false
-        }
-
-        if( dataSpec.isLocal || isCached ) {
-            return@Factory dataSpec
-        }
-
-        songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-            return@Factory dataSpec.withUri(it.first.toUri())
-        }
-
-        val playedFormat = runBlocking(Dispatchers.IO) { Database.format(mediaId).first() }
-        val playbackData = runBlocking(Dispatchers.IO) {
-//            SelectSimplePlayerType(
-//                mediaId,
-//                playedFormat,
-//                audioQualityFormat
-//            )
-            // Use default streaming player to preCache
-            SimplePlayer.playerResponseForPlayback(
-                mediaId,
-                playedFormat = playedFormat,
-                audioQuality = audioQualityFormat,
-            )
-        }.getOrThrow()
-        val format = playbackData.format
-
-        Database.asyncTransaction {
-            if (songExist(mediaId) > 0)
-                upsert(
-                    Format(
-                        songId = mediaId,
-                        itag = format.itag,
-                        mimeType = format.mimeType.split(";")[0],
-                        //codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
-                        bitrate = format.bitrate.toLong(),
-                        //sampleRate = format.audioSampleRate,
-                        contentLength = format.contentLength!!,
-                        loudnessDb = playbackData.audioConfig?.loudnessDb,
-                        //playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                    ),
-                )
-        }
-
-        val streamUrl = playbackData.streamUrl
-        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
-        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
-
-        songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
-        dataSpec.withUri(streamUrl.toUri())
-    }
-        .retryIf(
-            maxRetries = 2,
-            printStackTrace = true,
-            exponential = false,
-        ) { ex ->
-            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
-                ?: ex.findCause<InvalidHttpCodeException>()?.code
-            if (code == 403) println("DSF: got 403, retrying with fresh URL")
-            code == 403
-        }
-        .handleRangeErrors()
+    val urlCache = HashMap<String, CachedUrl>()
+    val cache = principalCache.getInstance(appContext())
+    val base = CacheDataSource.Factory()
+        .setCache(cache)
+        .setUpstreamDataSourceFactory(buildPlaybackUpstreamFactory(appContext()))
+    val resolver = makeResolver(cache, audioQualityFormat, "PreCacheDSF", allowFullyCachedShortcut = false)
+    return wrapFactory(base, resolver, urlCache)
 }
+
+
+/* ============ PlayerService (legacy) ============ */
 
 @OptIn(UnstableApi::class)
 internal fun PlayerService.createSimpleDataSourceFactory(): DataSource.Factory {
-    val songUrlCache = HashMap<String, Pair<String, Long>>()
-    return ResolvingDataSource.Factory(
-        CacheDataSource
-            .Factory()
-            .setCache(principalCache.getInstance(appContext()))
-            .setUpstreamDataSourceFactory(
-                OkHttpDataSource.Factory(
-                    buildPlaybackOkHttpClient(),
-                ),
-            )
-    ){ dataSpec ->
-        val mediaId = dataSpec.key ?: error("No media id")
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-
-        val isCached = try {
-            cache.isCached(mediaId, dataSpec.position, length)
-        } catch (e: Exception) {
-            false
-        }
-
-        if( dataSpec.isLocal || isCached ) {
-            return@Factory dataSpec
-        }
-
-        songUrlCache[mediaId]?.takeIf { it.second > System.currentTimeMillis() }?.let {
-            return@Factory dataSpec.withUri(it.first.toUri())
-        }
-
-        val playedFormat = runBlocking(Dispatchers.IO) { Database.format(mediaId).first() }
-        val playbackData = runBlocking(Dispatchers.IO) {
-            SelectSimplePlayerType(
-                mediaId,
-                playedFormat,
-                audioQualityFormat
-            )
-//            SimplePlayer.playerResponseForPlayback(
-//                mediaId,
-//                playedFormat = playedFormat,
-//                audioQuality = audioQualityFormat,
-//            )
-        }.getOrThrow()
-        val format = playbackData.format
-
-        Database.asyncTransaction {
-            if (songExist(mediaId) > 0)
-                upsert(
-                    Format(
-                        songId = mediaId,
-                        itag = format.itag,
-                        mimeType = format.mimeType.split(";")[0],
-                        //codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
-                        bitrate = format.bitrate.toLong(),
-                        //sampleRate = format.audioSampleRate,
-                        contentLength = format.contentLength!!,
-                        loudnessDb = playbackData.audioConfig?.loudnessDb,
-                        //playbackUrl = playbackData.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                    ),
-                )
-        }
-
-        val streamUrl = playbackData.streamUrl
-        val streamHost = android.net.Uri.parse(streamUrl).host ?: ""
-        println("DSF resolved $mediaId itag=${format.itag} urlHost=$streamHost clen=${format.contentLength} expires=${playbackData.streamExpiresInSeconds}")
-
-        songUrlCache[mediaId] = streamUrl to System.currentTimeMillis() + (playbackData.streamExpiresInSeconds * 1000L)
-        dataSpec.withUri(streamUrl.toUri())
-    }
-        .retryIf(
-            maxRetries = 2,
-            printStackTrace = true,
-            exponential = false,
-        ) { ex ->
-            val code = ex.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()?.responseCode
-                ?: ex.findCause<InvalidHttpCodeException>()?.code
-            if (code == 403) println("DSF: got 403, retrying with fresh URL")
-            code == 403
-        }
-        .handleRangeErrors()
+    val urlCache = HashMap<String, CachedUrl>()
+    val cache = principalCache.getInstance(appContext())
+    val base = CacheDataSource.Factory()
+        .setCache(cache)
+        .setUpstreamDataSourceFactory(buildPlaybackUpstreamFactory(appContext()))
+    val resolver = makeResolver(cache, audioQualityFormat, "PlayerDSF", allowFullyCachedShortcut = true)
+    return wrapFactory(base, resolver, urlCache)
 }
-
-//@OptIn(UnstableApi::class)
-//internal fun PlayerService.createDataSourceFactory(): DataSource.Factory {
-//    return ResolvingDataSource.Factory(
-//        CacheDataSource.Factory()
-//            .setCache(downloadCache)
-//            .setUpstreamDataSourceFactory(
-//                CacheDataSource.Factory()
-//                    .setCache(cache)
-//                    .setUpstreamDataSourceFactory(
-//                        appContext().okHttpDataSourceFactory
-//                    )
-////            )
-////            .setCacheWriteDataSinkFactory(null)
-////            .setFlags(FLAG_IGNORE_CACHE_ON_ERROR)
-////    ) { dataSpec: DataSpec ->
-////        //try {
-////
-////        // Get song from player
-////        val mediaItem = runBlocking {
-////            withContext(Dispatchers.Main) {
-////                player.currentMediaItem
-////            }
-////        }
-////        // Ensure that the song is in database
-////        Database.asyncTransaction {
-////            if (mediaItem != null) {
-////                insert(mediaItem.asSong)
-////            }
-////        }
-////
-////
-////        //println("PlayerService DataSourcefactory currentMediaItem: ${mediaItem?.mediaId}")
-////        //dataSpec.key?.let { player.findNextMediaItemById(it)?.mediaMetadata }
-////
-////        return@Factory runBlocking {
-////            try {
-////                dataSpecProcess(dataSpec, appContext(), appContext().isConnectionMetered())
-////            } catch (e: Exception) {
-////                Timber.e("PlayerService DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-////                println("PlayerService DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-////                dataSpec
-////            }
-////        }
-//////        }
-//////        catch (e: Throwable) {
-//////            println("PlayerService DataSourcefactory Error: ${e.message}")
-//////            throw IOException(e)
-//////        }
-////    }
-////}
-
-//@OptIn(UnstableApi::class)
-//internal fun MyPreCacheHelper.createDataSourceFactory(): DataSource.Factory {
-//    return ResolvingDataSource.Factory(
-//        CacheDataSource.Factory()
-//            .setCache(principalCache.getInstance(appContext())).apply {
-//                setUpstreamDataSourceFactory(
-//                    appContext().okHttpDataSourceFactory
-//                )
-//                setCacheWriteDataSinkFactory(null)
-//            }
-//    ) { dataSpec: DataSpec ->
-//        //try {
-//
-//            return@Factory runBlocking {
-//                try {
-//                    dataSpecProcess(dataSpec, appContext(), appContext().isConnectionMetered())
-//                } catch (e: Exception) {
-//                    Timber.e("MyPreCacheHelper DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-//                    println("MyPreCacheHelper DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-//                    dataSpec
-//                }
-//            }
-////        }
-////        catch (e: Throwable) {
-////            Timber.e("MyPreCacheHelper DataSourcefactory Error: ${e.stackTraceToString()}")
-////            println("MyPreCacheHelper DataSourcefactory Error: ${e.stackTraceToString()}")
-////            dataSpec
-////        }
-//    }
-////        .retryIf<UnplayableException>(
-////        maxRetries = 3,
-////        printStackTrace = true
-////    )
-////        .retryIf(
-////            maxRetries = 1,
-////            printStackTrace = true
-////        ) { ex ->
-////            ex.findCause<InvalidResponseCodeException>()?.responseCode == 403 ||
-////                    ex.findCause<ClientRequestException>()?.response?.status?.value == 403 ||
-////                    ex.findCause<InvalidHttpCodeException>() != null
-////        }.handleRangeErrors()
-//}
-
-//@OptIn(UnstableApi::class)
-//internal fun MyDownloadHelper.createDataSourceFactory(): DataSource.Factory {
-//    return ResolvingDataSource.Factory(
-//        CacheDataSource.Factory()
-//            .setCache(getDownloadCache(appContext())).apply {
-//                setUpstreamDataSourceFactory(
-//                    appContext().okHttpDataSourceFactory
-//                )
-//                setCacheWriteDataSinkFactory(null)
-//            }
-//    ) { dataSpec: DataSpec ->
-//        //try {
-//
-//            return@Factory runBlocking {
-//                try {
-//                    dataSpecProcess(dataSpec, appContext(), appContext().isConnectionMetered())
-//                } catch (e: Exception) {
-//                    Timber.e("MyDownloadHelper DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-//                    println("MyDownloadHelper DataSourcefactory return@Factory Error: ${e.stackTraceToString()}")
-//                    dataSpec
-//                }
-//            }
-////        } catch (e: Throwable) {
-////            Timber.e("MyDownloadHelper DataSourcefactory Error: ${e.stackTraceToString()}")
-////            println("MyDownloadHelper DataSourcefactory Error: ${e.stackTraceToString()}")
-////            dataSpec
-////        }
-//    }
-////        .retryIf<UnplayableException>(
-////        maxRetries = 3,
-////        printStackTrace = true
-////    )
-////        .retryIf(
-////            maxRetries = 1,
-////            printStackTrace = true
-////        ) { ex ->
-////            ex.findCause<InvalidResponseCodeException>()?.responseCode == 403 ||
-////                    ex.findCause<ClientRequestException>()?.response?.status?.value == 403 ||
-////                    ex.findCause<InvalidHttpCodeException>() != null
-////        }.handleRangeErrors()
-//}

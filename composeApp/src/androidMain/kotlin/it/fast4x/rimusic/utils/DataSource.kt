@@ -12,11 +12,11 @@ import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import it.fast4x.environment.Environment
 import it.fast4x.environment.utils.ProxyPreferences
 import it.fast4x.environment.utils.getProxy
 import okhttp3.OkHttpClient
 import timber.log.Timber
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 import kotlin.properties.ReadWriteProperty
@@ -87,43 +87,61 @@ val Context.okHttpDataSourceFactory
         this,
         OkHttpDataSource
             .Factory(buildPlaybackOkHttpClient())
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
+            .setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15")
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Referer" to "https://music.youtube.com/",
+                    "Origin" to "https://music.youtube.com",
+                )
+            )
     )
 
 /**
  * Build the OkHttpClient used for playback.
  *
- * As of mid-2026 googlevideo returns HTTP 403 for:
- *  - HEAD requests
- *  - GET without a Range header
- *  - GET with an open-ended "Range: bytes=N-" (no upper bound)
- * The CDN also throttles un-decoded n-param URLs at ~1 MB from the start,
- * so we cap open-ended reads at 256 KB. We do NOT rewrite already-bounded
- * ranges (e.g. cache reads / subranges at mid-file positions) — those are
- * set intentionally by the upstream and may start at any offset within the
- * already-cached window.
+ * As of mid-2026 googlevideo.com CDN (YouTube's media host) rejects
+ * anonymous media requests with HTTP 403 unless they carry proper browser
+ * headers: a desktop/Safari User-Agent, a music.youtube.com Referer and
+ * matching Origin. HEAD requests are also rejected.
+ *
+ * We intercept every request to *.googlevideo.com and:
+ *   1. Convert HEAD → GET (the CDN returns 403 for HEAD).
+ *   2. Add a Safari-on-macOS User-Agent if none is present.
+ *   3. Add Referer/Origin headers for music.youtube.com if missing.
+ *
+ * We do NOT tamper with Range headers. OkHttpDataSource generates its own
+ * Range headers when ExoPlayer seeks or refills buffers, and signed googlevideo
+ * URLs correctly serve 200 OK for full GETs and 206 Partial Content for
+ * bounded ranges as long as the UA/Referer are set. Open-ended "bytes=N-"
+ * ranges also work when proper headers are present.
  */
 @UnstableApi
 fun buildPlaybackOkHttpClient(): OkHttpClient {
-    val CHUNK_CAP = 262144L // 256 KB
+    val STREAM_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+    val STREAM_REFERER = "https://music.youtube.com/"
+    val STREAM_ORIGIN = "https://music.youtube.com"
+
     fun patch(req: okhttp3.Request): okhttp3.Request {
         if (!req.url.host.endsWith(".googlevideo.com")) return req
-        var r = req
-        if (r.method == "HEAD") r = r.newBuilder().get().build()
-        val range = r.header("Range")
-        when {
-            range == null -> {
-                r = r.newBuilder().header("Range", "bytes=0-${CHUNK_CAP - 1}").build()
-            }
-            range.matches(Regex("(?i)bytes=\\d+-\\s*")) -> {
-                val start = range.substringAfter("=").substringBefore("-").trim().toLongOrNull() ?: 0L
-                r = r.newBuilder().header("Range", "bytes=$start-${start + CHUNK_CAP - 1}").build()
-            }
-        }
-        return r
+        val b = req.newBuilder()
+        if (req.method == "HEAD") b.get()
+        if (req.header("User-Agent") == null) b.header("User-Agent", STREAM_UA)
+        if (req.header("Referer") == null) b.header("Referer", STREAM_REFERER)
+        if (req.header("Origin") == null) b.header("Origin", STREAM_ORIGIN)
+        return b.build()
     }
+
     val builder = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS) // no total-call timeout for streaming
+        .retryOnConnectionFailure(true)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        // Application interceptor — runs once per logical call before redirects/cache.
         .addInterceptor { chain -> chain.proceed(patch(chain.request())) }
+        // Network interceptor — runs on every actual network request (post-redirect).
         .addNetworkInterceptor { chain -> chain.proceed(patch(chain.request())) }
     ProxyPreferences.preference?.let { builder.proxy(getProxy(it)) }
     return builder.build()
